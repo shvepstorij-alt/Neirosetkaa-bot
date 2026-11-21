@@ -21,6 +21,8 @@ RENAMES = [
     ("freepik", "Premium +", "Plus"),
     ("freepik", "Бизнес", "Pro"),
     ("gamma", "Pro на год (х2)", "Pro на год"),
+    ("manus", "Standard", "Pro"),          # 22.11.2026: у Manus сейчас Free / Pro / Team
+    ("higgsfield", "Pro", "Ultra"),        # 22.11.2026: самый дорогой тариф — Ultra
 ]
 # (сервис, тариф) — удалить
 DELETES = [
@@ -58,6 +60,7 @@ ANNUAL = [
     ('zai', 'Max', 1411.2),
     ('zoom', 'Pro', 169.92),
     ('zoom', 'Business', 219.96),
+    ('manus', 'Pro', 204),
 ]
 
 USD_RUB = 100

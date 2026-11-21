@@ -390,29 +390,56 @@ async def build_service_screen(key: str, uid: int = 0):
         _dsc = (f" <i>(−{_promo_pct}%)</i>"
                 if (_promo_pct > 0 and _full[i] > _prices[i]) else "")
         _pr = f"<b>{_prices[i]}₽/мес</b>{_dsc}"
-        plans_text += f"  {_n}. <b>{p.get('name','')}</b> - {_pr}\n     <i>{p.get('desc','')}</i>\n"
+        _pd = (p.get('desc') or '').strip()
+        plans_text += (f"  {_n}. <b>{p.get('name','')}</b> - {_pr}\n"
+                       + (f"     <i>{_pd}</i>\n" if _pd else ""))
+    # Лимит Telegram — 4096 символов. У «Другого сервиса» 90+ тарифов,
+    # у Cursor длинные описания → «message is too long» (20.11.2026).
+    # Если не влезает — список без описаний, а если и так много — только
+    # кнопки (цены и так на них написаны).
+    _many = len(s["plans"]) > 12
+    if len(plans_text) + len(s.get('desc') or '') > 3300:
+        plans_text = "".join(
+            f"  {_n}. <b>{s['plans'][i].get('name','')}</b> - <b>{_prices[i]}₽</b>\n"
+            for _n, i in enumerate(_order, 1))
+    if len(plans_text) + len(s.get('desc') or '') > 3300 or _many:
+        plans_text = "<i>Цены — на кнопках ниже.</i>\n"
     _promo_line = ""
     if _promo_pct > 0 and any(_full[i] > _prices[i] for i in _prices):
         _promo_line = (f"🏷 <b>Скидка {_promo_pct}%</b> уже учтена в ценах"
                        + (f" — действует ещё {_promo_left} дн." if _promo_left else "")
                        + "\n\n")
+    _sd = (s.get('desc') or '').strip()
+    if len(_sd) > 1500:
+        _sd = _sd[:1500].rsplit(' ', 1)[0] + '…'
     text = (
         f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
-        f"<i>{s['desc']}</i>\n\n"
+        + (f"<i>{_sd}</i>\n\n" if _sd else "") +
         f"{_promo_line}"
         f"Доступные тарифы:\n{plans_text}\n"
         f"<b>👇 Выбери тариф:</b>"
     )
     rows = []
+    _row = []
     for i in _order:
         p = s["plans"][i]
         # Одна итоговая цена; процент скидки — подписью рядом.
         _bd = (f" (−{_promo_pct}%)"
                if (_promo_pct > 0 and _full[i] > _prices[i]) else "")
+        if _many:
+            # Много тарифов — сетка по 3 в ряд, коротко: «21$ · 2090₽»
+            _row.append(InlineKeyboardButton(
+                text=f"{p.get('name','')} · {_prices[i]}₽",
+                callback_data=f"shop_confirm:{key}:{i}"))
+            if len(_row) == 3:
+                rows.append(_row); _row = []
+            continue
         _btxt = f"{p.get('name','')} - {_prices[i]}₽/мес{_bd}"
         rows.append([InlineKeyboardButton(
             text=_btxt, callback_data=f"shop_confirm:{key}:{i}"
         )])
+    if _row:
+        rows.append(_row)
     # Только для ChatGPT: кнопка «Установить Приложение» с премиум-эмодзи.
     if key == "chatgpt":
         try:
@@ -427,12 +454,46 @@ async def build_service_screen(key: str, uid: int = 0):
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# ── Виртуальные номера (22.11.2026) ─────────────────────────────────────
+# Номер покупается только через мини-приложение: там выбирается сервис и
+# страна, а бот сам покупает номер. Обычная оплата тарифа в чате уходила в
+# ручную выдачу, и клиент оставался без номера.
+def is_sms_service(key: str, name: str = "") -> bool:
+    s = f"{key or ''} {name or ''}".lower()
+    import re as _re
+    return bool(_re.search(r"(^|[^a-z])sms([^a-z]|$)", s)) or "смс" in s or ("номер" in s and "виртуал" in s)
+
+
+async def _sms_redirect(cb: CallbackQuery, key: str) -> None:
+    from aiogram.types import WebAppInfo
+    from config import webapp_url
+    s = SHOP_CATALOG.get(key) or {}
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 Выбрать номер", style="success",
+                              web_app=WebAppInfo(url=webapp_url("/webapp/shop", svc=key)))],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_shop")],
+    ])
+    text = (f"{tg_emoji(s)} <b>{s.get('name', 'Виртуальные номера')}</b>\n\n"
+            "Номер для приёма SMS-кода при регистрации в любом сервисе.\n\n"
+            "Нажмите «Выбрать номер»: выберите сервис и страну, оплатите — номер "
+            "и код придут сюда в чат автоматически. Если код не придёт, номер "
+            "можно бесплатно заменить или вернуть деньги монетками.")
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
 @dp.callback_query(F.data.startswith("shop_svc:"))
 async def shop_service(cb: CallbackQuery):
     key = cb.data.split(":")[1]
     s = SHOP_CATALOG.get(key)
     if not s:
         await cb.answer("Сервис не найден", show_alert=True)
+        return
+    if is_sms_service(key, s.get("name", "")):
+        await _sms_redirect(cb, key)
         return
     if not s.get("plans"):
         logging.warning(f"shop_service: no plans for key={key!r}")
@@ -506,6 +567,9 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
     if not s or plan_idx >= len(s["plans"]):
         await cb.answer("Ошибка", show_alert=True)
         return
+    if is_sms_service(key, s.get("name", "")):
+        await _sms_redirect(cb, key)
+        return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
     # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
@@ -534,7 +598,7 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
         f"📋 <b>Подтверждение заказа</b>\n\n"
         f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
         f"💵 Стоимость: {price_line}\n\n"
-        f"<b>Что входит:</b>\n<i>{p['desc']}</i>\n\n"
+        + (f"<b>Что входит:</b>\n<i>{p['desc']}</i>\n\n" if (p.get('desc') or '').strip() else "") +
         f"Выбери способ оплаты:"
     )
 
@@ -663,6 +727,9 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     s = SHOP_CATALOG.get(key)
     if not s or plan_idx >= len(s.get("plans", [])):
         await cb.answer("Ошибка", show_alert=True)
+        return
+    if is_sms_service(key, s.get("name", "")):
+        await _sms_redirect(cb, key)
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
@@ -1045,6 +1112,9 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
     if not s or plan_idx >= len(s.get("plans", [])):
         await cb.answer("Ошибка", show_alert=True)
         return
+    if is_sms_service(key, s.get("name", "")):
+        await _sms_redirect(cb, key)
+        return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
     # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
@@ -1171,6 +1241,9 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
     s = SHOP_CATALOG.get(key)
     if not s or plan_idx >= len(s.get("plans", [])):
         await cb.answer("Ошибка", show_alert=True)
+        return
+    if is_sms_service(key, s.get("name", "")):
+        await _sms_redirect(cb, key)
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id

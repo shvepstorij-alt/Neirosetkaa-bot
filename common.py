@@ -15949,6 +15949,47 @@ def _code_activation_service(shop_key):
             "perplexity": "perplexity"}.get(str(shop_key or "").strip().lower())
 
 
+
+def _is_sms_shop(key, name="") -> bool:
+    try:
+        from handlers_shop import is_sms_service
+        return is_sms_service(key, name)
+    except Exception:
+        return False
+
+
+async def _sms_shop_to_coins(user_id, order_id, shop_key, amount_rub) -> None:
+    """Оплата «тарифа» виртуальных номеров → монетки на баланс + кнопка выбора номера."""
+    try:
+        _o = await fk_get_order(order_id) or {}
+        _total = int(round(float(amount_rub or 0))) + int(_o.get("coins_spent") or 0)
+    except Exception:
+        _total = int(round(float(amount_rub or 0)))
+    from db import add_coins
+    if _total > 0:
+        await add_coins(int(user_id), _total, reason=f"номер: оплата {order_id} → выбор номера")
+    from aiogram.types import WebAppInfo as _WAI_sms
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ <b>Оплата получена</b> — {_total}₽ зачислены монетками на баланс.\n\n"
+            "Теперь выберите номер: нажмите кнопку ниже, укажите сервис и страну и "
+            "оплатите монетками — номер и код придут сюда автоматически.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text="📱 Выбрать номер", web_app=_WAI_sms(url=webapp_url("/webapp/shop", svc=shop_key)))]]))
+    except Exception as _e_sms:
+        logging.warning(f"sms shop→coins msg {order_id}: {_e_sms}")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"📱 <b>Номер оплачен через чат</b> — {_total}₽ зачислены клиенту монетками, "
+            f"ему отправлена кнопка выбора номера.\n👤 {await _who_user(user_id)}\n"
+            f"{await _order_ref_line(order_id)}\n🆔 <code>{order_id}</code>",
+            parse_mode="HTML")
+    except Exception:
+        pass
+
 async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webhook") -> bool:
     """Зачисляет кредиты по оплаченному заказу.
 
@@ -16255,6 +16296,12 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"Спросил клиента про Gmail.", parse_mode="HTML")
                 except Exception:
                     pass
+            elif p and _svc_kind is None and _is_sms_shop(shop_key, (s.get("name", "") if isinstance(s, dict) else "")):
+                # Номер оплатили как обычный тариф (в чате, а не в мини-приложении).
+                # Сам номер так не купить — вся сумма уходит монетками на баланс,
+                # и клиент получает кнопку выбора номера. 22.11.2026
+                await _sms_shop_to_coins(user_id, order_id, shop_key, amount_rub)
+                await _mark_order_fulfilled(order_id)
             elif p and _svc_kind is None and await __import__("stock_accounts").stock_try_deliver(
                     bot=bot, admin_id=ADMIN_ID, user_id=user_id, shop_key=shop_key,
                     service_name=service_name, plan_name=p.get("name", ""),
@@ -17062,27 +17109,6 @@ async def setup_webhook_server():
         markup_for_category=_appstore_markup_web,usd_rate=_nsg_usd_rate,
         calc_price=_support_nsg.calc_price_rub,workflow_snapshot=_support_workflows,
         bot_identity=_support_bot_identity,generation=_support_generation))
-    # Повторная активация от помощника (решение владельца 21.11.2026): тот же
-    # gpt_resend_activation, что у кнопки в админке, раз в 24 ч на заказ.
-    import support_shop_actions as _ssa
-    def _support_plan_info(pack):
-        _pp = str(pack or "").split(":")
-        _sk = _pp[1] if len(_pp) > 1 else ""
-        _ix = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
-        _sv, _pl = _plan_by_order(_sk, _ix, _pack_plan_name(pack))
-        _pn = _pl.get("name") or _pack_plan_name(pack) or ("Plus" if _sk == "chatgpt" else "")
-        return {"label": f"{_sv.get('name', _sk)} {_pn}".strip(),
-                "auto": (plan_name_to_key(_pn) in GPT_AUTO_PLANS) if _sk == "chatgpt" else None}
-    async def _support_resend_fetch(uid, ref):
-        return await _ssa.fetch_facts(await get_pool(), uid, ref, plan_info=_support_plan_info)
-    async def _support_resend_notify(text):
-        try:
-            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
-        except Exception:
-            await bot.send_message(ADMIN_ID, re.sub(r"<[^>]*>", "", text))
-    app.router.add_post('/api/support/resend_activation', _ssa.make_support_resend_handler(
-        fetch=_support_resend_fetch, claim=activation_cooldown,
-        resend=gpt_resend_activation, notify=_support_resend_notify))
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)
