@@ -628,3 +628,75 @@ class FreshSet22Nov(unittest.TestCase):
         for case in fresh:
             for pattern in (case.get('need') or []) + (case.get('forbid') or []):
                 re.compile('(?im)' + pattern)
+
+
+class Bench14Fixes(unittest.TestCase):
+    T = [{'service_id': 'suno_ai', 'service': 'Suno AI', 'plan': 'Pro', 'price': 990},
+         {'service_id': 'kimi', 'service': 'Kimi', 'plan': 'Plus', 'price': 1990}]
+
+    def _go(self, burst, **ev):
+        ev.setdefault('turn_understanding', {'owner_topic': 'what_next'})
+        return hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': ev}, {'burst': burst, 'tariffs': self.T})
+
+    def test_catalogue_name_with_suffix_is_found(self):
+        self.assertIn('почту и пароль от аккаунта Suno', self._go('оплатил суно, что дальше?')['reply'])
+
+    def test_no_payment_link_gets_email_and_password(self):
+        out = self._go('кими оплатил, а ссылку на оплату не могу достать')
+        self.assertIn('почту и пароль от аккаунта Kimi', out['reply'])
+
+    def test_receipt_without_order_goes_to_the_owner(self):
+        out = self._go('отправил чек, а в боте заказа нет')
+        self.assertEqual(out['reply'], hard_routes.RECEIPT_TAKEN)
+        self.assertTrue(out['evidence']['owner_alert'])
+
+    def test_old_owner_line_about_licences_is_not_a_clash(self):
+        out = hard_routes.apply({'reply': 'Из российских документов подходит только загранпаспорт РФ.', 'handoff': True,
+                                 'evidence': {'owner_alignment_hold': True}},
+                                {'burst': 'а по паспорту можно?', 'history': [{'role': 'owner', 'text': 'можно по водительским правам'}]})
+        self.assertFalse(out['handoff'])
+        self.assertFalse(out['evidence']['owner_alignment_hold'])
+
+    def test_checks_never_spend_the_clients_limit(self):
+        for path in ('support_agent/bench.py', 'support_agent/dialog_check.py'):
+            self.assertNotIn('service.charge_call()', open(path, encoding='utf-8').read())
+
+    def test_english_price_names_the_bot(self):
+        from support_agent.playbook import tidy
+        out = tidy({'reply': 'Hi! ChatGPT Plus is 1,990 ₽.', 'handoff': False, 'evidence': {}}, {'burst': 'Hi! How much is ChatGPT Plus?'})
+        self.assertIn('@neirosetkaa_bot', out['reply'])
+
+
+class OwnerAnswers22Nov(unittest.TestCase):
+    def _go(self, burst, tariffs=()):
+        return hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}}, {'burst': burst, 'tariffs': list(tariffs)})
+
+    def test_fkwallet(self):
+        self.assertEqual(self._go('просит скачать какой-то FKwallet')['reply'], hard_routes.FKWALLET_REPLY)
+
+    def test_claude_blocked_money(self):
+        out = self._go('клод заблокировал аккаунт, верните деньги')
+        self.assertEqual(out['reply'], hard_routes.CLAUDE_BLOCK_REPLY)
+        self.assertTrue(out['evidence']['owner_alert'])
+
+    def test_team_plan_from_catalogue_or_owner(self):
+        rows = [{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Business', 'price': 3990}]
+        self.assertIn('Business — 3990 ₽', self._go('нужен чатгпт на команду из 5 человек', rows)['reply'])
+        self.assertIn('Александр', self._go('нужен чатгпт на команду из 5 человек')['reply'])
+
+    def test_where_is_my_order(self):
+        self.assertIn('номер заказа', self._go('оплатил час назад, где мой заказ?')['reply'])
+        self.assertNotIn('where_is_my_order', self._go('Заказ #12001 где мой заказ')['evidence'].get('hard_routes') or [])
+
+    def test_kazakh_and_ukrainian_get_no_russian_templates(self):
+        self.assertTrue(hard_routes.latin_only('Сәлеметсіз бе, ChatGPT Plus қанша тұрады?'))
+        self.assertTrue(hard_routes.latin_only('Скільки коштує ChatGPT Plus?'))
+        self.assertFalse(hard_routes.latin_only('Сколько стоит?'))
+
+    def test_owner_texts(self):
+        from support_agent.faq import load_faq
+        faq = {t['id']: t['answer'] for t in load_faq()['topics']}
+        self.assertIn('не работает', faq['sora'])
+        self.assertIn('нельзя', faq['transfer'])
+        self.assertIn('целиком', faq['installments'])
+        self.assertIn('в любое время', faq['working_hours'])
