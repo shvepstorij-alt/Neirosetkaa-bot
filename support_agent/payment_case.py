@@ -106,6 +106,17 @@ async def resolve_payment(service, job, understanding, context):
     receipts = receipt_files(service.store.db, job['chat'])
     if not number:
         return None
+    # Owner 21.11.2026: one table of order states for every path (text, receipt, screenshot).
+    from . import order_action
+    acted = None
+    if not receipts and receipt_amount_unverified(understanding) is None:
+        # A receipt or a claimed amount keeps the checked receipt path below (forwarding, amount match).
+        acted = await order_action.decide(service, job, number, context, source='payment_case')
+    if acted is not None and (acted.get('evidence') or {}).get('order_action') in (
+            'reactivated', 'reactivation_needed', 'already_activated', 'manual', 'already_sent'):
+        if hasattr(service, '_order_action_notice'):
+            await service._order_action_notice(job, acted)
+        return acted
     try:
         lookup = await service.shop.order_facts(job['uid'], {'untyped': number})
     except Exception:

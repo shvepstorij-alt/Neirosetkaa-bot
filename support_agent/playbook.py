@@ -125,10 +125,12 @@ def tidy(answer, context):
         reply = _faq_answer('course_bonus_start') or reply
     reply = owner_actions(reply)
     burst = str((context or {}).get('burst') or '')
-    if re.search(r'NAVSEX|CHATIK10', reply) and not re.search(r'(?i)промо|скидк|дешевл|купон|акци|бонус', burst):
-        # Owner 20.11.2026 (live3): a promo code only when the client asks about a discount.
-        reply = '\n'.join(line for line in reply.split('\n') if not re.search(r'NAVSEX|CHATIK10', line))
-        reply = re.sub(r'[^.!?\n]*(?:промокод)[^.!?\n]*[.!?]?', '', reply)
+    owner_text = bool((answer.get('evidence') or {}).get('owner_text_used')) if isinstance(answer.get('evidence'), dict) else False
+    if (re.search(r'NAVSEX|CHATIK10', reply) and not owner_text
+            and not re.search(r'(?i)промо|скидк|дешевл|купон|акци|бонус', burst)):
+        # Owner 20.11.2026 (live3): a promo code only when the client asks — unless it is the owner's own approved text.
+        reply = re.sub(r'[^.!?\n]*(?:NAVSEX|CHATIK10|промокод)[^.!?\n]*[.!?]?', '', reply)
+        reply = re.sub(r'[ \t]+\n', '\n', reply)
     hold = None
     if CLARIFY_PREFIX in reply:
         try:
@@ -138,11 +140,19 @@ def tidy(answer, context):
         except Exception:
             pass
     reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
+    if not reply:
+        reply = str(answer.get('reply') or '').strip()  # a filter must never leave the client an empty answer
     if hold:
         evidence = dict(answer.get('evidence') or {})
         evidence.update(owner_step_hold=True, handoff_reason=hold)
-        return dict(answer, reply=reply, evidence=evidence)
-    return dict(answer, reply=reply) if reply != answer.get('reply') else answer
+        result = dict(answer, reply=reply, evidence=evidence)
+    else:
+        result = dict(answer, reply=reply) if reply != answer.get('reply') else answer
+    try:
+        from . import hard_routes  # Owner 21.11.2026: deterministic hard rules run last on every reply
+        return hard_routes.apply(result, context)
+    except Exception:
+        return result
 
 
 CLARIFY_PREFIX = 'о каком сервисе идёт речь и что именно нужно сделать'

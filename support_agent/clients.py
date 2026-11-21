@@ -1106,6 +1106,31 @@ class ShopReader:
                 signals['code_used']=bool(code_row['used'])
         return signals
 
+    async def resend_activation(self,uid,order):
+        """Owner 21.11.2026: ask the shop to resend the activation button for this client's own paid order.
+
+        The shop re-checks ownership, payment, service, that the window is closed and nothing was activated,
+        and allows it once per order per 24h. Separate token SUPPORT_SHOP_ACTION_TOKEN; without it nothing is called.
+        """
+        import os
+        token=os.environ.get('SUPPORT_SHOP_ACTION_TOKEN','')
+        base=str(self.export_url or '').rstrip('/')
+        if len(token)<32 or not base.startswith('https://'):
+            return {'ok':False,'error':'not_connected','msg':'Выдача повторной активации помощником не подключена.'}
+        if type(uid) is not int or not re.fullmatch(r'\d{1,20}',str(order or '')):
+            return {'ok':False,'error':'invalid_request','msg':''}
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=40)) as session:
+                async with session.post(base+'/api/support/resend_activation',json={'user_id':uid,'order':str(order)},
+                                        headers={'Authorization':'Bearer '+token}) as r:
+                    data=await r.json(content_type=None)
+                    if not isinstance(data,dict):
+                        return {'ok':False,'error':'bad_response','msg':''}
+                    return {'ok':bool(data.get('ok')),'error':data.get('error'),'msg':str(data.get('msg') or '')[:300]}
+        except Exception as exc:
+            return {'ok':False,'error':'call_failed','msg':type(exc).__name__}
+
     async def order_facts(self,uid,reference):
         """Fresh, owned exact lookup; never trusts an email or client-supplied UID."""
         result={'orders':[],'orders_status':'not_connected','ownership_scope':'authenticated_user',

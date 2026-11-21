@@ -1298,12 +1298,32 @@ class Service:
         evidence['translated_from_russian']=reply
         return dict(answer, reply=translated, evidence=evidence)
 
+    async def _order_action_notice(self, job, acted):
+        """The owner always learns about a repeat activation and about orders that need him."""
+        ev=(acted or {}).get('evidence') or {}
+        if ev.get('order_action')=='reactivated' or ev.get('owner_alert') or acted.get('handoff'):
+            try:
+                await self.owner_message(self.chat_identity(job['chat'])+'\n🧾 '+str(ev.get('diagnostic') or '')[:900])
+            except Exception:
+                logging.warning('Order action note was not delivered')
+
     async def _paid_notice_reply(self, job, context):
         """The shop's «Оплатил заказ #N» message: look the order up, then name the next step."""
         from . import paid_notice
+        from . import order_action
         found=paid_notice.parse(context.get('burst'))
         if not found:
-            return None
+            # Owner 21.11.2026: «оплатил … Заказ #9974» in the client's own words is checked the same way.
+            number=order_action.find_reference(context.get('burst'))
+            if not number:
+                return None
+            from .payment_case import receipt_files
+            if receipt_files(self.store.db,job['chat']):
+                return None  # a receipt goes the checked path: forwarded to the owner, amount compared
+            acted=await order_action.decide(self,job,number,context)
+            if acted is not None:
+                await self._order_action_notice(job,acted)
+            return acted
         status,row='не проверен',None
         if found.get('order'):
             try:
@@ -1314,6 +1334,13 @@ class Service:
             state=str((lookup or {}).get('orders_status') or 'read_error') if isinstance(lookup,dict) else 'read_error'
             row=orders[0] if state=='available' and len(orders)==1 and isinstance(orders[0],dict) else None
             status=str(row.get('status') or 'нет статуса') if row else state
+        if row and str(row.get('activation_status') or '') in ('not_checked','in_progress','code_consumed','fulfilled_recorded','manual_pending') \
+                and str(row.get('status') or '').casefold()=='paid':
+            # The window is not open any more: act on the order's real state, not the generic first-time steps.
+            acted=await order_action.decide(self,job,found.get('order') or found.get('fk'),context)
+            if acted is not None:
+                await self._order_action_notice(job,acted)
+                return acted
         kind,reply=paid_notice.compose(found,context.get('tariffs') or [])
         note=paid_notice.owner_note(found,kind,status)
         refused=row is not None and str(row.get('status') or '').casefold() not in ('paid','')
@@ -1524,6 +1551,14 @@ class Service:
         payment=await resolve_payment(self, job, understanding, context)
         if not self.store.still_current(job):
             return None
+        if payment is None:
+            from . import order_action
+            seen=re.sub(r'\D','',str((understanding or {}).get('order_number') or ''))
+            if seen:
+                # Owner 21.11.2026: the number may come from a screenshot — the same order check applies.
+                payment=await order_action.decide(self,job,seen,context,source='model')
+                if payment is not None:
+                    await self._order_action_notice(job,payment)
         answer=payment if payment is not None else package(understanding, context, self.store.db, job['chat'])
         if payment is not None and isinstance(answer,dict) and isinstance(answer.get('evidence'),dict):
             answer['evidence']['payment_case']=True

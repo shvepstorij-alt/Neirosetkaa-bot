@@ -326,10 +326,19 @@ def status_safe(value):
 
 
 def real_stop_reason(answer, evidence=None, current_text=''):
-    """Owner 20.11.2026: a draft kept from auto-send only by its situation is not a stop.
+    """Owner 21.11.2026: a «stop» is only a hand-over to Alexander.
 
-    Checks (/bench, /live) report «остановился» separately from «только черновик».
+    Auto-send quality gates (coverage, access-data requests, situation list, price checks) keep a draft
+    from going out by itself, but the owner still gets a ready draft — that is «только черновик», not a stop.
     """
-    meta = dict(evidence if isinstance(evidence, dict) else (answer or {}).get('evidence') or {})
-    meta.pop('situation_hold', None)
-    return block_reason(answer, meta, current_text)
+    meta = evidence if isinstance(evidence, dict) else (answer or {}).get('evidence') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    for key, label in (('owner_step_hold', 'Александр сам ведёт этот шаг'), ('manual_secret_intake', 'клиент прислал данные доступа'),
+                       ('conflict_hold', 'конфликт — нужен Александр'), ('refund_hold', 'возврат — решает Александр'),
+                       ('owner_alignment_hold', 'ответ расходится с репликой Александра')):
+        if meta.get(key):
+            return str(meta.get('handoff_reason') or label)
+    if not str((answer or {}).get('reply') or '').strip():
+        return 'пустой ответ'
+    return None

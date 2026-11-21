@@ -94,8 +94,10 @@ async def run_bench(service, mode='new'):
                 store.finish(job, reply, answer.get('summary', ''), answer.get('handoff', True))
             why = (str(evidence.get('handoff_reason') or '') or str(gate or '') or str(evidence.get('diagnostic') or '')) if stopped else ''
             note = ''
-            if not stopped and evidence.get('situation_hold'):
-                note = '\n  [только черновик, без автоотправки: ситуация не в списке автоответа]'
+            if not stopped:
+                gate_full = block_reason(dict(answer, reply=reply), evidence, case['client'])
+                if gate_full:
+                    note = '\n  [только черновик, без автоотправки: ' + str(gate_full)[:160] + ']'
             rows.append((case, reply + ('\n  [почему стоп: ' + why[:200] + ']' if why else '') + note, stopped, check(case, reply, stopped)))
     except Exception as exc:
         await service.owner_message('Эталонная проверка остановлена: %s.' % (str(exc) or type(exc).__name__))
