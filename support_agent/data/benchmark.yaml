@@ -63,7 +63,7 @@ cases:
   forbid: ['почту и пароль']
 - id: claude-pro-paid
   client: "Здравствуйте, оплатил Claude Pro, что дальше?"
-  need: ['номер заказа']  # owner 21.11.2026: «оплатил X» without the notice → order number first
+  need: ['согласн|номер заказа']  # owner's Claude answer (risks and consent) or the order number
 - id: claude-max-paid
   client: "Оплатил Claude Max, что дальше?"
   need: ['почт', 'код|верификац']  # owner 20.11.2026: Max/Ultra — только почта + код с неё, пароль не нужен
@@ -1261,3 +1261,214 @@ cases:
   client: "Здравствуйте сколько стоит у вас оформить (оплатить) подписку pro на чат gpt."
   need: ['Pro[^\n]{0,20}₽']  # 21.11.2026 @Vmiti: the price first, not only payment steps
   forbid: ['5-30 минут', 'активация идёт в боте']
+# ---- Свежий набор 22.11.2026: новые ситуации, которых не было в проверках (по правилам владельца на 21.11) ----
+- id: fresh-claude-max-price-after
+  client: "сколько стоит клод макс и что нужно после оплаты?"
+  need: ['₽', 'почт']
+  forbid: ['5-30 минут', 'будет на связи']
+- id: fresh-gpt-go-or-plus
+  client: "чем гпт плюс отличается от го? что брать?"
+  need: ['Plus', 'Go', 'совет|рекоменд|лучше|подойд']
+- id: fresh-cursor-year
+  client: "можно курсор сразу на год оплатить?"
+  need: ['год', 'Cursor']
+  forbid: ['будет на связи']
+- id: fresh-gpt-for-friend
+  client: "хочу оплатить чатгпт подруге, это возможно?"
+  need: ['да|конечно|можно', '@neirosetkaa_bot']
+- id: fresh-autopay-off
+  client: "как отключить автосписание за подписку?"
+  need: ['автосписани\w* (?:у нас )?нет']
+  forbid: ['отмените в настройках']
+- id: fresh-2fa-after-activation
+  client: "после активации гпт просит код двухфакторки, что делать?"
+  need: ['скрин', 'заказ']
+- id: fresh-ooo-documents
+  client: "нужны закрывающие документы для ООО"
+  need: ['Александр']
+  forbid: ['₽']
+- id: fresh-english-price
+  client: "Hi! How much is ChatGPT Plus?"
+  need: ['1990|₽', 'neirosetkaa_bot|bot']
+  forbid: ['Здравствуйте', 'Оплатить можно в боте']
+- id: fresh-ai-for-code
+  client: "какой нейросетью лучше код писать?"
+  need: ['Claude|ChatGPT|Cursor|Codex', '₽']
+- id: fresh-loyal-discount
+  client: "постоянным клиентам скидка есть?"
+  need: ['NAVSEX']
+  forbid: ['15%|20%|30%']
+- id: fresh-coins-what
+  client: "монетки за что дают и куда их тратить?"
+  need: ['монет']
+  forbid: ['будет на связи']
+- id: fresh-other-service-where
+  client: "где в боте этот ваш другой сервис?"
+  need: ['Другой сервис', 'Каталог']
+- id: fresh-receipt-no-order
+  client: "отправил чек, а в боте заказа нет"
+  need: ['Александр']
+  forbid: ['вернём', 'деньги вернутся']
+- id: fresh-tg-premium-after
+  client: "телеграм премиум что от меня нужно после оплаты?"
+  need: ['username|юзернейм|никнейм|@']
+- id: fresh-appstore-turkey
+  client: "есть пополнение турецкого эпл айди?"
+  need: ['TRY|Турц']
+  forbid: ['пополнения нет', 'не продаём']
+- id: fresh-kimi-no-link
+  client: "кими оплатил, а ссылку на оплату не могу достать, не получается"
+  need: ['почт', 'пароль']
+- id: fresh-suno-paid
+  client: "оплатил суно, что дальше?"
+  need: ['почт', 'пароль|код']
+  forbid: ['номер заказа из бота — проверю']
+- id: fresh-vpn-advice
+  client: "нужен впн для чатгпт, какой посоветуете?"
+  need: ['DureVpnBot']
+- id: fresh-vpn-drops
+  client: "впн выкидывает каждые 5 минут, чат гпт не грузится"
+  need: ['VPN|впн|стран|регион|локац']
+- id: fresh-claude-licence
+  client: "по водительским правам пройду верификацию клода?"
+  need: ['не подход|нельзя|не принима|загран']
+  forbid: ['права подходят']
+- id: fresh-claude-only-inner-passport
+  client: "у меня только внутренний паспорт, что делать с клодом?"
+  need: ['загран', '6990|за вас|проходим мы']
+- id: fresh-renew-perplexity
+  client: "хочу продлить перплексити"
+  need: ['@neirosetkaa_bot', 'Perplexity|Каталог']
+- id: fresh-gpt-dropped-early
+  client: "подписка гпт слетела, а оплачено было до 30 числа"
+  need: ['скрин', 'восстанов']
+  forbid: ['NAVSEX']
+- id: fresh-robux
+  client: "робуксы на 800 есть?"
+  need: ['Гифт-карты и игры|Roblox']
+  forbid: ['в каталоге нет']
+- id: fresh-steam
+  client: "стим пополнить можно у вас?"
+  need: ['Steam|стим|Гифт-карты']
+- id: fresh-xbox-game
+  client: "хочу купить игру на xbox"
+  need: ['Xbox']
+  forbid: ['PlayStation:']
+- id: fresh-iphone-gpt
+  client: "как скачать чатгпт на айфон?"
+  need: ['App Store|Apple ID']
+  forbid: ['uptodown']
+- id: fresh-android-claude
+  client: "как скачать клод на андроид?"
+  need: ['claude.ru.uptodown.com/android']
+  forbid: ['iPhone', 'chatgpt.ru.uptodown']
+- id: fresh-kz-card
+  client: "можно оплатить картой казахстана?"
+  need: ['СБП', 'Мир']
+- id: fresh-payment-declined
+  client: "оплата не проходит, банк пишет отклонено"
+  need: ['/start', 'СБП', 'ошибк']
+- id: fresh-are-you-bot
+  client: "а вы бот или человек?"
+  need: ['ИИ-помощник']
+- id: fresh-scam-threat
+  client: "это мошенничество, где моя подписка?? напишу в банк"
+  need: ['Понимаю вас']
+- id: fresh-wrong-plan
+  client: "оплатил не тот тариф, хотел про а купил плюс"
+  need: ['номер заказа', 'тариф']
+- id: fresh-refund-changed-mind
+  client: "можно вернуть деньги? передумал"
+  need: ['номер заказа']
+  forbid: ['вернём', 'деньги вернутся']
+- id: fresh-claude-how-long
+  client: "через сколько активируете клод после оплаты?"
+  need: ['при первой возможности']
+  forbid: ['5-30 минут', 'через час', 'в течение']
+- id: fresh-call-me
+  client: "перезвоните мне пожалуйста"
+  need: ['созвон|текст|голосов']
+- id: fresh-course-bonus
+  client: "я с курса вайбкодинг, мне положен бонус?"
+  need: ['почт', 'курс']
+  forbid: ['токен|api/auth']
+- id: fresh-gpt-three-months
+  client: "можно сделать подписку на 3 месяца на гпт?"
+  need: ['месяц']
+  forbid: ['на 3 месяца можно оформить']
+- id: fresh-step-question-device
+  history: [['owner', 'Пришлите, пожалуйста, почту и пароль от аккаунта Zoom']]
+  client: "а с телефона или с компа лучше заходить?"
+  need: ['телефон|компьютер|без разницы|любо']
+  forbid: ['Получил, Александр продолжит']
+- id: fresh-step-code
+  history: [['owner', 'код с почты']]
+  client: "482913"
+  need: ['Получил|Александр продолжит']
+- id: fresh-step-success
+  history: [['owner', 'Попробуйте пожалуйста активировать через бота) Пришла инструкция?']]
+  client: "всё получилось, подписка есть"
+  need: ['получилось|рад|Отлично']
+  forbid: ['Александр продолжит']
+- id: fresh-two-prices
+  client: "сколько стоит мидджорни и клинг?"
+  need: ['Midjourney[^\n]*₽', 'Kling[^\n]*₽']
+- id: fresh-gamma-want
+  client: "хочу гамму для презентаций"
+  need: ['Gamma', '₽']
+- id: fresh-heygen-what
+  client: "что такое heygen и сколько стоит?"
+  need: ['HeyGen|Heygen', '₽']
+- id: fresh-notion-off-catalog
+  client: "можете оплатить notion plus?"
+  need: ['ссылк', 'Другой сервис']
+- id: fresh-grok-video
+  client: "нужен grok для видео, сколько?"
+  need: ['Cursor']
+  forbid: ['SuperGrok']
+- id: fresh-cheaper-than-plus
+  client: "а дешевле чем 1990 есть?"
+  need: ['Go|NAVSEX']
+- id: fresh-claude-pro-includes
+  client: "а что входит в клод про?"
+  need: ['Claude Code|лимит|модел']
+  forbid: ['будет на связи']
+- id: fresh-belarus-card
+  client: "у меня белорусская карта, пройдёт?"
+  need: ['СБП|Мир']
+- id: fresh-capcut-not-arrived
+  client: "капкат оплатил, аккаунт не пришел"
+  need: ['Александр']
+  forbid: ['вижу']
+- id: fresh-tg-number
+  client: "нужен номер для регистрации в телеграм"
+  need: ['Виртуальные номера']
+- id: fresh-referral
+  client: "как получить реферальную ссылку?"
+  need: ['Мой профиль|реферал']
+- id: fresh-spotify
+  client: "спотифай премиум есть?"
+  need: ['Spotify', '₽']
+- id: fresh-youtube-family
+  client: "ютуб премиум семейный есть?"
+  need: ['YouTube']
+- id: fresh-hello
+  client: "Добрый вечер"
+  need: ['Здравствуйте|Добрый']
+  forbid: ['₽']
+- id: fresh-thanks-works
+  client: "спасибо большое, всё работает!"
+  need: ['обращайтесь|рад']
+  forbid: ['₽']
+- id: fresh-canva-year
+  client: "есть ли канва на год?"
+  need: ['Canva', 'год']
+- id: fresh-openrouter-50
+  client: "openrouter пополнить на 50 долларов можно?"
+  need: ['OpenRouter', '₽|Другой сервис']
+- id: fresh-gemini-after-pay
+  client: "оплатил джемини, что прислать?"
+  need: ['почт', 'пароль']
+- id: fresh-perplexity-what-need
+  client: "хочу перплексити про, что от меня понадобится?"
+  need: ['₽', 'почт']
