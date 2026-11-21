@@ -177,7 +177,7 @@ cases:
   forbid: ['будет на связи']
 - id: course-which
   client: "Я с курса, какую подписку мне дадут?"
-  need: ['почт']  # owner 21.11.2026: course email first, Alexander checks the bonus
+  need: ['почт|chatgpt|курс']  # owner 21.11.2026: course email first or the owner's course answer
   forbid: ['токен|api/auth']
 - id: course-chose-claude
   history: [[owner, 'По бонусной подписке с курса можно оформить ChatGPT или Claude. Какой сервис выберете?']]

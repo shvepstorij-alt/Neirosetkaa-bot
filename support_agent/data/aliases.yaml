@@ -25,7 +25,7 @@ services:
     aliases: [lovable, ловабл, лавабл]
   - id: midjourney
     name: Midjourney
-    aliases: [midjourney, миджорни, миджерни, миджа, мидж]
+    aliases: [midjourney, миджорни, миджерни, мидджорни, мидджерни, миджорней, миджа, мидж, midj]
   - id: canva
     name: Canva
     aliases: [canva, канва, канве, канву]
