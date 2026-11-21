@@ -1642,7 +1642,8 @@ class Service:
 
     _ALERT_REASONS={'refund_request':'просьба о возврате','wrong_plan':'оплачен не тот тариф или сервис',
                     'claude_consent':'клиент согласился с рисками Claude — нужна почта и оформление',
-                    'human_or_bot':'клиент зовёт Александра','paid_issue_draft_only':'оплатил, но не работает'}
+                    'human_or_bot':'клиент зовёт Александра','paid_issue_draft_only':'оплатил, но не работает',
+                    'invoice_legal':'документы или оплата от юрлица/ИП'}
 
     async def maybe_owner_alert(self, job, answer):
         """Owner 21.11.2026: in AUTO the owner hears only when he is needed — one short note, not every reply.

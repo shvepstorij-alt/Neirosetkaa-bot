@@ -221,7 +221,7 @@ _PAID_ALREADY = re.compile(r'(?i)оплатил\w*|оплачен\w*|списа�
 
 def _payfail_detect(burst, context, answer):
     reply = str(answer.get('reply') or '')
-    return bool(_PAY_FAIL.search(burst)) and not _PAID_ALREADY.search(burst) and '/start' not in reply
+    return bool(_PAY_FAIL.search(burst)) and not _PAID_ALREADY.search(burst) and 'какую ошибку' not in reply
 
 
 def _payfail_act(answer, burst, context):
@@ -399,7 +399,7 @@ def _paid_free_act(answer, burst, context):
 
 
 # --- 15. a price question gets the price (owner 21.11.2026, @Vmiti: «сколько стоит pro на чат gpt» got only payment steps)
-_PRICE_Q = re.compile(r'(?i)сколько\s+(?:стоит|стоят|будет|выйдет|по\s+цене|по\s+деньгам)|\bскок\b|\bцен[аыуе]\b|стоимост\w*|почём|почем|прайс|'
+_PRICE_Q = re.compile(r'(?i)\bсколько\b(?![^.?!\n]{0,40}(?:дн|времен|ждать|жду|минут|час|сут|лимит|сообщен|запрос|генерац|токен|прид[её]т|активир|оформ\w*\s+после|после\s+оплат))|\bскок\b|\bцен[аыуе]\b|стоимост\w*|почём|почем|прайс|'
                       r'how\s+much|\bprice')
 _PLAN_WORDS = ('pro', 'plus', 'go', 'max', 'ultra', 'premium', 'business', 'team', 'basic', 'standard', 'плюс', 'про', 'макс')
 _PLAN_RU = {'плюс': 'plus', 'про': 'pro', 'макс': 'max'}
@@ -419,21 +419,48 @@ def _asked_rows(burst, context):
     return rows
 
 
+_BUY_Q = re.compile(r'(?i)\bхочу\b|\bнуж(?:ен|на|но)\b|купить|куплю|оформить|возьму|приобрест|подключить')
+
+
+def _missing_rows(burst, context, reply):
+    """Rows of the asked services whose price the reply does not give."""
+    flat = lambda v: re.sub(r'[^a-zа-яё0-9]+', '', str(v or '').casefold())
+    said = flat(reply)
+    rows = _asked_rows(burst, context)
+    if '₽' not in reply:
+        return rows
+    return [r for r in rows if flat(r.get('service')) not in said]
+
+
 def _price_detect(burst, context, answer):
     evidence = answer.get('evidence') or {}
-    if not _PRICE_Q.search(burst) or '₽' in str(answer.get('reply') or '') or answer.get('handoff'):
+    reply = str(answer.get('reply') or '')
+    if answer.get('handoff') or evidence.get('continue_step') or evidence.get('owner_step_ack') or evidence.get('order_action'):
         return False
-    if evidence.get('continue_step') or evidence.get('owner_step_ack') or evidence.get('order_action'):
+    if _PAID_FREE.search(burst) or _PAID_ISSUE.search(burst):
         return False
-    return 0 < len(_asked_rows(burst, context)) <= 12
+    priced = bool(_PRICE_Q.search(burst))
+    buying = bool(_BUY_Q.search(burst)) and '₽' not in reply  # «мидджорни хочу купить» gets the prices too
+    if not (priced or buying):
+        return False
+    return 0 < len(_missing_rows(burst, context, reply)) <= 12
 
 
 def _price_act(answer, burst, context):
     from .turn_understanding import tariff_question
     evidence = dict(answer.get('evidence') or {})
     evidence.update(owner_text_used=True, hard_route_auto=True)
-    prices = tariff_question(_asked_rows(burst, context))
     rest = str(answer.get('reply') or '').strip()
+    if '₽' in rest:
+        # Prices of some asked services are there, others are missing («клод про и перплексити, сколько за оба»).
+        extra = _missing_rows(burst, context, rest)
+        lines = ['• ' + (str(r.get('service') or '') + ' ' + str(r.get('plan') or '')).strip() + ' — ' + str(r['price']) + ' ₽'
+                 for r in sorted(extra, key=lambda r: r['price'])]
+        return dict(answer, reply=(rest + '\n\n' + '\n'.join(lines)).strip(), handoff=False, evidence=evidence)
+    prices = tariff_question(_asked_rows(burst, context))
+    # The list already asks which tariff: the model's own «Уточните: Basic, Standard или Pro?» would repeat it.
+    rest = '\n\n'.join(p for p in re.split(r'\n\s*\n', rest)
+                         if not re.fullmatch(r'(?is)\s*(?:уточните|какой\s+(?:тариф|из)|выберите|подскажите,?\s+(?:пожалуйста,?\s+)?какой)[^\n]{0,200}\?\s*', p))
     # The reply keeps whatever else it answered («сколько стоит зум и как оплатить»); a «no price» line goes.
     rest = '\n'.join(l for l in rest.split('\n') if not re.search(r'(?i)цен\w*\s+(?:сейчас\s+)?не\s+вижу|цены\s+этого|не\s+вижу\s+цен|точн\w+\s+цен\w*\s+не', l)).strip()
     if re.search(r'Откройте бота и нажмите', rest) and not re.search(r'(?i)как\s+(?:мне\s+)?(?:оплат|купит|оформ|приобр)', burst):
@@ -442,8 +469,97 @@ def _price_act(answer, burst, context):
     return dict(answer, reply=dedupe((prices + ('\n\n' + rest if rest else '')).strip()), handoff=False, evidence=evidence)
 
 
+# --- 16. App Store region: never «нет» while the catalogue has it (owner 21.11.2026: «регион есть, а помощник говорит нет»)
+_REGION_DENIED = re.compile(r'(?i)(?:регион\w*|для\s+\w+|пополнени\w*|номинал\w*|карт\w*)[^.!?\n]{0,60}(?:\bнет\b|недоступ\w*|не\s+прода[её]\w*|не\s+можем|отсутству\w*)'
+                            r'|(?:\bнет\b|недоступ\w*)[^.!?\n]{0,40}(?:регион\w*|пополнени\w*|номинал\w*)')
+
+
+def _region_rows(burst, context):
+    try:
+        from .apple_matching import region_codes
+    except Exception:
+        return []
+    asked = region_codes(burst)
+    if not asked:
+        return []
+    return [r for r in (context or {}).get('nominals') or () if isinstance(r, dict)
+            and asked & region_codes(str(r.get('region') or ''), stock=True) and type(r.get('price')) is int]
+
+
+def _region_detect(burst, context, answer):
+    reply = str(answer.get('reply') or '')
+    return bool(_REGION_DENIED.search(reply)) and bool(_region_rows(burst, context))
+
+
+def _region_act(answer, burst, context):
+    rows = _region_rows(burst, context)
+    title = str(rows[0].get('region') or '').split('|')[0].strip()
+    lines = [str(r.get('nominal') or '') + ': ' + str(r['price']) + ' ₽' for r in rows]
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    text = ('Да, для региона ' + title + ' пополнение есть 🙂 Сейчас доступны такие номиналы:\n\n' + '\n'.join(lines)
+            + '\n\nОформить можно в боте @neirosetkaa_bot: «Каталог» → «App Store / iCloud» → регион → номинал. '
+            'Код придёт в чат бота сразу после оплаты. Какой номинал нужен?')
+    return dict(answer, reply=text, handoff=False, evidence=evidence)
+
+
+# --- 17. a year or several months at once: honest answer from the catalogue (owner 21.11.2026) ---------------
+_YEARLY = re.compile(r'(?i)на\s+(?:целый\s+)?год|годов\w*|на\s+(?:\d+|два|три|четыре|пять|шесть|несколько)\s+месяц\w*|полгода|'
+                     r'сразу\s+на\s+(?:\d+|несколько)|12\s+месяц|year|annual')
+_YEAR_PLAN = re.compile(r'(?i)год|годов|year|annual|12\s*мес')
+
+
+def _yearly_detect(burst, context, answer):
+    return bool(_YEARLY.search(burst)) and not _PAID_FREE.search(burst)
+
+
+def _yearly_act(answer, burst, context):
+    from .fit_answer import _asked, _services
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    service_rows = [r for r in _asked_rows(re.sub(r'(?i)\b(?:pro|plus|max|ultra|про|плюс|макс)\b', '', burst), context)]
+    names = sorted({str(r.get('service') or '') for r in service_rows if r.get('service')})
+    if not names:
+        state = str(((context or {}).get('dialog_state') or {}).get('service') or '')
+        names = [state] if state else []
+        service_rows = [r for r in (context or {}).get('tariffs') or () if isinstance(r, dict) and str(r.get('service') or '') == state]
+    if not names:
+        text = 'Подскажите, пожалуйста, какой сервис нужен — проверю, есть ли на него годовой тариф 🙂'
+    else:
+        yearly = [r for r in service_rows if _YEAR_PLAN.search(str(r.get('plan') or '') + ' ' + str(r.get('service') or ''))
+                  and type(r.get('price')) is int]
+        if yearly:
+            lines = ['• ' + (str(r.get('service') or '') + ' ' + str(r.get('plan') or '')).strip() + ' — ' + str(r['price']) + ' ₽'
+                     for r in sorted(yearly, key=lambda r: r['price'])]
+            text = ('Да, годовой тариф есть 🙂\n' + '\n'.join(lines)
+                    + '\n\nОформить можно в боте @neirosetkaa_bot: «Каталог» → сервис → тариф, оплата по СБП или картой «Мир».')
+        else:
+            text = ('Годового тарифа на ' + ', '.join(names) + ' в каталоге сейчас нет — подписка оформляется на месяц. '
+                    'Автосписаний нет, а продлить можно в боте в любой момент, когда текущий срок закончится 🙂')
+    rest = str(answer.get('reply') or '').strip()
+    rest = '\n'.join(l for l in rest.split('\n') if not _YEARLY.search(l) and not re.search(r'(?i)на\s+месяц|только\s+на\s+1', l)).strip()
+    from .playbook import dedupe
+    return dict(answer, reply=dedupe(text + ('\n\n' + rest if rest else '')), handoff=False, evidence=evidence)
+
+
+# --- 18. documents or payment from a company → the owner (owner 21.11.2026) -------------------------------------
+_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
+                      r'от\s+(?:компании|организации|фирмы)|с\s+р/?с|расч[её]тн\w+\s+сч[её]т|\bупд\b|акт\w*\s+выполненных')
+
+
+def _invoice_detect(burst, context, answer):
+    return bool(_INVOICE.search(burst))
+
+
+def _invoice_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alert=True, owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=_faq('invoice_legal') or answer.get('reply'), handoff=False, evidence=evidence)
+
+
 RULES = (
     ('conflict', _conflict_detect, _conflict_act),
+    ('invoice_legal', _invoice_detect, _invoice_act),
     ('paid_without_order', _paid_free_detect, _paid_free_act),
     ('wrong_plan', _wrong_plan_detect, _wrong_plan_act),
     ('refund_request', _refund_detect, _refund_act),
@@ -456,10 +572,12 @@ RULES = (
     ('unknown_phrase_glued', _glued_detect, _glued_act),
     ('payment_method_unknown', _pay_detect, _pay_act),
     ('claude_no_driving_licence', _licence_detect, _licence_act),
+    ('yearly_plan', _yearly_detect, _yearly_act),
+    ('appstore_region_exists', _region_detect, _region_act),
     ('price_without_price', _price_detect, _price_act),
     ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
-STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'refund_request', 'claude_consent'}
+STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
 
 
 def apply(answer, context):

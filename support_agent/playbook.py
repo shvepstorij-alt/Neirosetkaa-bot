@@ -158,7 +158,12 @@ def tidy(answer, context):
         result = dict(answer, reply=reply) if reply != answer.get('reply') else answer
     try:
         from . import hard_routes  # Owner 21.11.2026: deterministic hard rules run last on every reply
-        return hard_routes.apply(result, context)
+        from .completeness import complete  # owner 21.11.2026 (bench 12): the minimum of a consultation
+        routed = hard_routes.apply(result, context)
+        done = complete(routed, context)
+        if done is not routed:
+            done = dict(done, reply=dedupe(done['reply']))
+        return done
     except Exception:
         return result
 

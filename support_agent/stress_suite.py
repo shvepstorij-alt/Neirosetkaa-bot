@@ -377,14 +377,14 @@ def build_cases(catalog):
     add('delivery-time', [{
         'role': 'client', 'text': 'когда я её получу',
         'owner_topic': 'delivery_time',
-        'expect': {'hold': False, 'need': ['5', '30', '2', 'автоактивац']},
+        'expect': {'hold': False, 'need': ['2–5', 'автоактивац', 'при первой возможности']},  # owner 21.11.2026
     }])
     add('delivery-invented', [{
         'role': 'client', 'text': 'через сколько придёт kling после оплаты',
         'owner_topic': 'delivery_time', 'fixed_by': 'owner_fact',
         'naive': 'Kling придёт за 10 минут.',
         # The invented term is replaced by the owner's own text, not sent and not held.
-        'expect': {'hold': False, 'need': ['5–30 минут']},
+        'expect': {'hold': False, 'need': ['при первой возможности'], 'forbid': ['10 минут']},  # owner 21.11.2026: manual — no term
     }])
     add('chatgpt-activation', [{
         'role': 'client', 'text': 'как активировать чат гпт плюс',
