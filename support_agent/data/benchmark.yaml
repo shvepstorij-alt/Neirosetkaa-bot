@@ -46,8 +46,8 @@ cases:
   forbid: ['гарантии на claude', 'на какой срок']
 - id: course-referred
   client: "Здравтвуйте\nсказали вам написать\nПодписка на нейросеть вам доступна, напишите, пожалуйста, Александру @Neirosetkaalex"
-  need: ['chatgpt', 'почт']  # owner 20.11.2026: ChatGPT by default, course email + token
-  forbid: ['в @neirosetkaalex']
+  need: ['почт', 'курс']  # owner 21.11.2026: course email first, Alexander checks the bonus
+  forbid: ['в @neirosetkaalex', 'токен|api/auth']
 - id: course-registered-gpt
   history: [[owner, 'По бонусу с курса: зарегистрируйтесь на chatgpt.com с почтой gmail.com и напишите сюда.']]
   client: "Обратился по поводу бонусной подписки в чате GPT\nЯ уже зарегистрировался в чате GPT на бесплатном тарифе"
@@ -325,7 +325,8 @@ cases:
   need: ['\$|долл']
 - id: discount-ask
   client: "А можно дешевле? Скидку сделаете?"
-  forbid: ['скидк\w* \d+ ?%', 'будет на связи']
+  need: ['NAVSEX']  # owner: a direct discount request gets NAVSEX 10%
+  forbid: ['будет на связи']
 - id: promise-time
   client: "Через сколько активируется подписка после оплаты?"
   need: ['минут']
@@ -706,8 +707,8 @@ cases:
   forbid: ["парол"]
 - id: exam-a-course-bonus-start
   client: "Здравствуйте, мне сказали что с курса подписка на нейросеть доступна и надо написать Александру"
-  need: ["chatgpt", "токен|api/auth/session"]
-  forbid: ["оплат\\w* в боте"]
+  need: ["почт", "курс"]  # owner 21.11.2026
+  forbid: ["токен|api/auth", "оплат\\w* в боте"]
 - id: exam-a-course-bonus-claude
   history:
   - {role: owner, text: "По бонусной подписке с курса оформим ChatGPT на 1 месяц. Пришлите, пожалуйста, почту с курса и токен аккаунта ChatGPT."}
@@ -853,7 +854,7 @@ cases:
   forbid: ["восстановим"]
 - id: exam-a-course-bonus
   client: "я студентка курса, нам обещали подарочную подписку"
-  need: ["chatgpt", "месяц", "почт", "токен|api/auth"]  # owner: почта с курса + токен — не стоп
+  need: ["почт", "курс"]  # owner 21.11.2026: course email first, Alexander checks the bonus — no token yet
   forbid: ["оплат\\w* в боте"]
 - id: exam-a-codex
   client: "кодекс отдельно сколько стоит?"
@@ -881,7 +882,7 @@ cases:
   forbid: ["водительск"]
 - id: exam-a-payment-error
   client: "оплата в боте не проходит ошибку выдает"
-  need: ["vpn|впн", "сбп|друг\\w* способ"]
+  need: ["/start", "сбп"]  # owner 21.11.2026: /start, new order, better via SBP
   forbid: ["будет на связи"]
 - id: exam-a-login-problem
   client: "не могу зайти в клод, пишет слишком много кодов"
@@ -893,7 +894,7 @@ cases:
   forbid: ["будет на связи"]
 - id: exam-a-feature-missing
   client: "пропал кодекс в аккаунте куда делся"
-  need: ["выйд|войд\\w* заново|перезайд"]
+  need: ["выйт|выйд|войти\\s+(?:снова|заново)|войд\\w* заново|перезайд"]
   forbid: ["будет на связи"]
 - id: exam-a-tech-setup
   client: "помогите поставить mcp сервер в клод десктоп"
