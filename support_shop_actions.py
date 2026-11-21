@@ -20,7 +20,9 @@ import re
 
 TOKEN_ENV = 'SUPPORT_SHOP_ACTION_TOKEN'
 MAX_BODY = 2048
-COOLDOWN_SECONDS = 24 * 3600
+# Owner 21.11.2026: a repeat request is re-checked in the shop every time; a new activation is issued when the
+# previous one was not used. The claim only covers the activation window (ACTIVATION_WINDOW_MIN = 120).
+COOLDOWN_SECONDS = 2 * 3600
 MAX_ORDER_AGE_DAYS = 30
 SERVICES = ('chatgpt', 'claude', 'perplexity')
 CLAIM_PREFIX = 'support_resend:'
