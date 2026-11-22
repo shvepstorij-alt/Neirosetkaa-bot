@@ -700,3 +700,26 @@ class OwnerAnswers22Nov(unittest.TestCase):
         self.assertIn('нельзя', faq['transfer'])
         self.assertIn('целиком', faq['installments'])
         self.assertIn('в любое время', faq['working_hours'])
+
+
+class Bench15Fixes(unittest.TestCase):
+    def test_generic_what_next_does_not_block_a_known_service_step(self):
+        rows = [{'service_id': 'suno', 'service': 'Suno', 'plan': 'Pro', 'price': 990}]
+        what_next = 'Если вы уже оплатили… напишите, какой сервис оформляете, и пришлите номер заказа — подскажу следующий шаг.'
+        out = hard_routes.apply({'reply': what_next, 'handoff': False, 'evidence': {'turn_understanding': {'owner_topic': 'what_next'}}},
+                                {'burst': 'оплатил суно, что дальше?', 'tariffs': rows})
+        self.assertIn('почту и пароль от аккаунта Suno', out['reply'])
+
+    def test_unknown_service_gets_other_service(self):
+        from support_agent.payment_guide import render
+        guide = render('', '', '', {'bot_navigation': {'status': 'available', 'username': 'neirosetkaa_bot', 'catalog_webapp': True}})
+        out = hard_routes.apply({'reply': guide, 'handoff': False, 'evidence': {}}, {'burst': 'нетфликс можете оплатить?', 'tariffs': []})
+        self.assertIn('Другой сервис', out['reply'])
+        same = hard_routes.apply({'reply': guide, 'handoff': False, 'evidence': {}}, {'burst': 'как оплатить подписку?', 'tariffs': []})
+        self.assertEqual(same['reply'], guide)
+
+    def test_slang_and_bare_plus(self):
+        from support_agent.fit_answer import _asked, _services
+        self.assertIn('ChatGPT', _asked('брат нужна гпшка на месяц', _services()))
+        rows = [{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990}]
+        self.assertEqual(hard_routes._asked_rows('сколько плюс стоит?', {'tariffs': rows}), rows)
