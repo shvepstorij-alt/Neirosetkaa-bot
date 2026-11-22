@@ -2386,6 +2386,11 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                       # a draft that asks for access data is never preferred over the owner's approved text —
                       # except inside Alexander's own step (owner 21.11.2026), where he asked for the token himself
                       and (cont or not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply)))
+        if (not keep_draft and topic == 'unknown_answer' and not answer.get('handoff') and len(reply.strip()) > 80
+                and classify_draft(reply, prices)['send'] and not re.search(r'(?i)парол|токен|sessionkey|api/auth', reply)):
+            # Bench 15 (22.11.2026): «уточните, какой сервис» replaced drafts that already answered the question.
+            # The owner's «не знаю» text is for an empty draft only.
+            keep_draft = True
         if keep_draft:
             pass  # ongoing dialog: the model's own checked answer stays; the FAQ was its reference
         elif platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):

@@ -390,7 +390,8 @@ def _paid_free_detect(burst, context, answer):
     history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
     if re.search(r'(?i)#\s?\d{4,}|заказ\w*\s*(?:№|номер)?\s*\d{4,}|free\s*kassa|\b\d{9}\b', burst + ' ' + history):
         return False
-    return 'номер заказа' not in str(answer.get('reply') or '')
+    # bench 15: the generic «что дальше» text itself asks for the order number — a known service step still wins.
+    return 'номер заказа' not in str(answer.get('reply') or '') or bool(_paid_service_step(burst, context))
 
 
 def _paid_service_step(burst, context):
@@ -428,6 +429,10 @@ def _asked_rows(burst, context):
     from .fit_answer import _asked, _services
     tariffs = [r for r in (context or {}).get('tariffs') or () if isinstance(r, dict) and type(r.get('price')) is int]
     names = _asked(burst, _services())
+    if not names and re.search(r'(?i)\bплюс\w*\b|\bplus\b', burst):
+        # «сколько плюс стоит?» — the service of this dialog, otherwise ChatGPT Plus (bench 15)
+        state = str(((context or {}).get('dialog_state') or {}).get('service') or '')
+        names = {state or 'ChatGPT'}
     flat = lambda v: re.sub(r'[^a-zа-яё0-9]+', '', str(v or '').casefold())
     def same(name, row):
         # bench 14: the catalogue may say «Suno AI» or «Google Gemini» — a name inside the other is the same service.
@@ -725,6 +730,36 @@ def _where_order_act(answer, burst, context):
                 handoff=False, evidence=evidence)
 
 
+# --- 23. a service that is not in the catalogue got the generic «Каталог → выберите сервис» (bench 15: Netflix, Duolingo)
+_GENERIC_GUIDE = re.compile(r'(?i)Выберите\s+нужный\s+сервис\s+и\s+тариф|Выберите\s+сервис\s+и\s+нужный\s+тариф')
+_PAY_ASK = re.compile(r'(?i)оплат\w*|купит\w*|купл\w*|приобр\w*|подписк\w*|подключ\w*|\bесть\b|можно')
+_COMMON = re.compile(r'(?i)^(?:можно|можете|можешь|оплат\w*|купит\w*|купл\w*|приобр\w*|подписк\w*|подключ\w*|есть|ли|а|и|у|вас|вы|мне|мой|мою|'
+                     r'нам|на|в|за|для|через|как|где|сколько|стоит|цен\w*|хочу|нужен|нужна|нужно|пожалуйста|привет|здравствуйте|добрый|'
+                     r'день|вечер|утро|тариф\w*|месяц\w*|год|бот\w*|ваш\w*|это|эт\w*|тоже|ещё|еще|уже|сейчас|супер|премиум|premium|'
+                     r'плюс|plus|pro|про|аккаунт\w*|сервис\w*|подскажите|скажите|интересует|возможно|сделать|оформить|оформите|'
+                     r'вашем|через|рублях|рубл\w*|долл\w*|карт\w*|сбп|мир)$')
+
+
+def _unknown_names(burst):
+    from .fit_answer import _asked, _services
+    if _asked(burst, _services()):
+        return []
+    words = re.findall(r'[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё.\-]{3,}', burst)
+    return [w for w in words if not _COMMON.match(w.strip('.-'))]
+
+
+def _offcat_detect(burst, context, answer):
+    reply = str(answer.get('reply') or '')
+    return (bool(_GENERIC_GUIDE.search(reply)) and bool(_PAY_ASK.search(burst)) and len(burst) < 160
+            and bool(_unknown_names(burst)))
+
+
+def _offcat_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=_faq('off_catalog') or answer.get('reply'), handoff=False, evidence=evidence)
+
+
 RULES = (
     ('superseded_owner_line', _superseded_detect, _superseded_act),
     ('claude_blocked_money', _claude_block_detect, _claude_block_act),
@@ -750,6 +785,7 @@ RULES = (
     ('yearly_plan', _yearly_detect, _yearly_act),
     ('appstore_region_exists', _region_detect, _region_act),
     ('price_without_price', _price_detect, _price_act),
+    ('off_catalog_generic_guide', _offcat_detect, _offcat_act),
     ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
 STOP_AFTER = {'claude_blocked_money', 'fkwallet_qr', 'chatgpt_team', 'where_is_my_order', 'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'receipt_no_order', 'linkpay_no_link', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
