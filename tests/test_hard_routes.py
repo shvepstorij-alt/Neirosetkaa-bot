@@ -422,7 +422,8 @@ class SystemicFit21Nov(unittest.TestCase):
                                 {'burst': 'Здравствуйте сколько стоит у вас оформить (оплатить) подписку pro на чат gpt.', 'tariffs': self.T})
         self.assertIn('Pro 5× — 9990 ₽', out['reply'])
         self.assertNotIn('Plus — 1990', out['reply'])
-        self.assertNotIn('Откройте бота', out['reply'])
+        self.assertNotIn('Перейти к оплате', out['reply'])  # the long generic guide goes; the short steps stay (owner 22.11.2026)
+        self.assertIn('1. Откройте бота @neirosetkaa_bot', out['reply'])
 
     def test_price_and_how_to_pay_keeps_both(self):
         out = hard_routes.apply({'reply': 'Оплата в @neirosetkaa_bot.\n\n1. Откройте бота и нажмите «Каталог».', 'handoff': False, 'evidence': {}},
@@ -723,3 +724,24 @@ class Bench15Fixes(unittest.TestCase):
         self.assertIn('ChatGPT', _asked('брат нужна гпшка на месяц', _services()))
         rows = [{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990}]
         self.assertEqual(hard_routes._asked_rows('сколько плюс стоит?', {'tariffs': rows}), rows)
+
+
+class Bench17Fixes(unittest.TestCase):
+    T = ([{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990},
+          {'service_id': 'chatgpt_credits', 'service': 'пополнение кредитов ChatGPT', 'plan': '250 кредитов (10$)', 'price': 1090}]
+         + [{'service_id': 'google_gemini', 'service': 'Gemini', 'plan': p, 'price': c}
+            for p, c in [('Pro', 2090), ('Pro на год', 19989), ('Ultra', 24990), ('Ultra на год', 199990)]])
+
+    def _tidy(self, burst, reply):
+        from support_agent.playbook import tidy
+        return tidy({'reply': reply, 'handoff': False, 'evidence': {}}, {'burst': burst, 'tariffs': self.T})['reply']
+
+    def test_no_credit_top_ups_unless_asked(self):
+        out = self._tidy('брат нужна гпшка на месяц, че по цене', 'На месяц есть Plus за 1 990 ₽.')
+        self.assertNotIn('кредитов', out)
+        self.assertIn('@neirosetkaa_bot', out)
+
+    def test_gemini_after_payment_names_the_email(self):
+        out = self._tidy('джемини про можно на мой гугл акк оформить?',
+                         'Да, можем.\n\nОплатить можно в боте @neirosetkaa_bot. После оплаты подскажу, что понадобится для активации.')
+        self.assertIn('почту и пароль', out)
