@@ -7,7 +7,7 @@
 services:
   - id: chatgpt
     name: ChatGPT
-    aliases: [chatgpt, chat gpt, gpt, чат гпт, чатгпт, чатжпт, гпт, жпт, чате гпт, чата гпт]
+    aliases: [chatgpt, chat gpt, gpt, чат гпт, чатгпт, чатжпт, гпт, жпт, чате гпт, чата гпт, гпшка, гптшка, гпт-шка, гптэшка, джипити, чатджипити, чат джипити, чатгптшка, чатик]
   - id: claude
     name: Claude
     aliases: [claude, клод, клода, клоде, клоду]
