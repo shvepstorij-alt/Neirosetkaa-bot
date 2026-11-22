@@ -63,10 +63,25 @@ def _after_pay(burst, context):
         return ''
     rows = _asked_rows(burst, context)
     services = {str(r.get('service_id') or '') for r in rows}
-    if len(services) != 1 or len(rows) > 3:
+    if len(services) != 1:
         return ''
     row = rows[0]
     kind = kind_for(row.get('service_id'), row.get('plan') if len(rows) == 1 else '', (context or {}).get('tariffs'), row.get('service'))
+    if kind == 'shop':
+        # bench 17: the catalogue id may differ from the guide's («google_gemini»); try the alias id of the service
+        from .fit_answer import _asked, _services
+        try:
+            import yaml
+            from pathlib import Path
+            raw = yaml.safe_load((Path(__file__).with_name('data') / 'aliases.yaml').read_text(encoding='utf-8')) or {}
+            ids = {str(r.get('name')): str(r.get('id')) for r in raw.get('services') or []}
+        except Exception:
+            ids = {}
+        for name in _asked(burst, _services()):
+            alt = kind_for(ids.get(name, ''), '', (context or {}).get('tariffs'), name)
+            if alt != 'shop':
+                kind = alt
+                break
     if kind == 'shop':
         return ''
     text = str(_after(load_guide(), kind, '', None, row.get('service')) or '').strip()
@@ -158,6 +173,11 @@ def complete(answer, context):
                 reply = re.sub(r'\n{3,}', '\n\n', contradicts.sub('', reply)).strip()
             added.append(extra)
             names.append(name)
+    if not added and '₽' in reply and BOT not in reply:
+        # bench 17: a reply with prices always says where to pay (owner 21.11.2026: «указывать бота»)
+        from .turn_understanding import pay_steps
+        added.append(pay_steps())
+        names.append('bot_line')
     if not added:
         return answer
     paragraphs = [p for p in re.split(r'\n\s*\n', reply) if p.strip()]

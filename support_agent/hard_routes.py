@@ -440,6 +440,9 @@ def _asked_rows(burst, context):
         return bool(a) and (a == b or a == c or (len(a) >= 4 and (a in b or a in c)) or (len(b) >= 4 and b in a))
     rows = [r for r in tariffs if any(same(n, r) for n in names)]
     rows = [r for r in rows if not _NOT_OFFERED.search(str(r.get('service') or ''))]
+    if not re.search(r'(?i)кредит|пополн|баланс|credits?|top.?up', burst):
+        # bench 17: «нужна гпшка, че по цене» got the ChatGPT credit top-ups too — only when credits are asked
+        rows = [r for r in rows if not re.search(r'(?i)пополнени|кредит', str(r.get('service') or '') + ' ' + str(r.get('plan') or ''))]
     words = {(_PLAN_RU.get(w, w)) for w in re.findall(r'[a-zа-яё]+', burst.casefold()) if w in _PLAN_WORDS}
     if words:
         narrowed = [r for r in rows if any(re.search(r'(?i)(?<![a-z])' + w, str(r.get('plan') or '')) for w in words)]

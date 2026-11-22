@@ -1782,6 +1782,16 @@ def _service_rows(context, service_id):
 
 TARIFF_ASK = 'Напишите, какой тариф оформить.'
 PAY_LINE = 'Оплатить можно в боте @neirosetkaa_bot: «Каталог» → сервис → тариф, по СБП или картой «Мир».'
+
+
+def pay_steps(service=''):
+    """Owner 22.11.2026: «всегда подсказывать подробно по шагам» — how to buy, step by step, with the bot."""
+    pick = (str(service).strip() + ' → нужный тариф') if str(service or '').strip() else 'нужный сервис и тариф'
+    return ('Как оформить:\n'
+            '1. Откройте бота @neirosetkaa_bot и нажмите «Каталог».\n'
+            '2. Выберите ' + pick + '.\n'
+            '3. Оплатите по СБП (без комиссии) или картой «Мир».\n'
+            '4. После оплаты напишите сюда — подскажу следующий шаг 🙂')
 ORG_ID_NEXT = None  # replaced by the claude_activation owner answer (19.11.2026)
 
 
@@ -1799,7 +1809,9 @@ def tariff_question(rows):
         seen.add(label)
         lines.append('• ' + label + (' — ' + str(row['price']) + ' ₽' if type(row.get('price')) is int else ''))
     # Owner 19.11.2026: tariffs first, and always how to pay right under them.
-    return 'Есть такие варианты:\n' + '\n'.join(lines) + '\n\n' + TARIFF_ASK + '\n' + PAY_LINE
+    names = {str(row.get('service') or '').strip() for row in rows if str(row.get('service') or '').strip()}
+    return ('Есть такие варианты:\n' + '\n'.join(lines) + '\n\n' + TARIFF_ASK + '\n\n'
+            + pay_steps(names.pop() if len(names) == 1 else ''))
 
 
 def drop_other_plans(reply, validated):

@@ -551,14 +551,14 @@ def build_cases(catalog):
     ])
     add('icloud-region-followup', [
         {'role': 'client', 'text': 'Хочу пополнить айклауд на регион США',
-         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': True,
+         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': False,
                     'need': ['5 USD', '450', 'США'], 'forbid': ['Росси', '640']}},
         {'role': 'client', 'text': 'На 30$ есть?', 'use_state': True, 'service': 'chatgpt',
          'reply': '1. Да, есть пополнение ChatGPT на 30$.\n2. Стоимость 3090 ₽.',
-         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': True,
+         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': False,
                     'need': ['нет', '5 USD'], 'forbid': ['3090', 'ChatGPT']}},
         {'role': 'client', 'text': 'А Айклауд?', 'use_state': True,
-         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': True,
+         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': False,
                     'need': ['5 USD'], 'forbid': ['3090']}},
     ])
     add('plus-two-options', [
@@ -567,7 +567,7 @@ def build_cases(catalog):
         # Owner 11.11.2026: plain «плюс» is plain Plus; the new-account plan only when the client asks for it.
         {'role': 'client', 'text': 'Тариф плюс', 'use_state': True,
          'reply': 'ChatGPT Plus: 2000 ₽.',
-         'expect': {'hold': False, 'service': 'chatgpt', 'casual': True,
+         'expect': {'hold': False, 'service': 'chatgpt', 'casual': False,
                     'need': ['Plus'], 'forbid_plans': ['Go'],
                     'forbid': ['1000', 'Новый аккаунт']}},
         {'role': 'client', 'text': 'А на новый аккаунт plus?', 'use_state': True,
@@ -576,7 +576,7 @@ def build_cases(catalog):
     ])
     add('pay-chatgpt-plus', [
         {'role': 'client', 'text': 'Хочу чат гпт плюс',
-         'expect': {'hold': False, 'service': 'chatgpt', 'price': 2000, 'casual': True}},
+         'expect': {'hold': False, 'service': 'chatgpt', 'price': 2000, 'casual': False}},
         {'role': 'client', 'text': 'как оплатить?', 'use_state': True, 'payment_asked': True,
          'reply': 'Для оплаты тарифа ChatGPT Plus используйте токен сессии в окне активации бота.',
          'expect': {'hold': False, 'service': 'chatgpt',
@@ -676,7 +676,7 @@ def build_cases(catalog):
         {'role': 'client', 'text': 'беру этот', 'use_state': True,
          'reply': 'Suno Pro: 1000 ₽.\nSuno Premier: 3000 ₽.\nКакой из них?',
          'expect': {'hold': False, 'service': 'suno', 'need': ['1000'],
-                    'forbid': ['3000', 'Premier'], 'casual': True}},
+                    'forbid': ['3000', 'Premier'], 'casual': False}},
     ])
     by_id = {case['id']: case for case in cases}
     by_id['icloud-region-followup']['extra_catalog'] = [{
