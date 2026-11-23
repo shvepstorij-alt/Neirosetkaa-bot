@@ -275,8 +275,12 @@ def business_profile():
 
 # Owner 20.11.2026: auto-replies go out only in situations where the assistant already answers right.
 # Everything else stays a draft for the owner. Edit this list to widen the auto-reply.
+# Owner 23.11.2026 (launch: «помощник сам не отвечает»): the model answers itself in every situation except refunds
+# and blocked accounts. Alexander's step («owner_step») and the ordinary dialog («other») were drafts only, so the
+# 10-minute rule never sent anything. The owner's own texts and hard rules are sent in any situation (service.py).
 AUTO_SITUATIONS = {'buy', 'price', 'compare_choose', 'thanks_only', 'vpn_access', 'howto_usage',
-                   'off_catalog_or_app', 'has_sub_not_showing', 'paid_not_working'}
+                   'off_catalog_or_app', 'has_sub_not_showing', 'paid_not_working',
+                   'activation_step', 'account_login', 'owner_step', 'other'}
 
 
 def auto_hold_reason(situation, understanding=None):

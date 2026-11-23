@@ -1603,11 +1603,14 @@ class Service:
             answer['evidence']['continue_step']=True
         from .playbook import auto_hold_reason
         hold=auto_hold_reason(validated_situation, understanding)
+        ev_now=answer.get('evidence') if isinstance(answer,dict) else None
+        if isinstance(ev_now,dict) and (ev_now.get('hard_route_auto') or ev_now.get('owner_step_ack')):
+            hold=None  # owner 23.11.2026: his own fixed text (refund ask, Claude block, «Получил…») goes out in any situation
         if hold and isinstance(answer,dict):
             answer.setdefault('evidence',{})
             if isinstance(answer['evidence'],dict):
                 answer['evidence']['situation_hold']=True
-                answer['evidence'].setdefault('diagnostic',hold)
+                answer['evidence']['diagnostic']=hold  # the real reason, not the earlier classification note
         if isinstance(answer,dict) and not answer.get('handoff'):
             from .voice import greet_back
             answer=dict(answer,reply=greet_back(answer.get('reply'),context.get('burst'),context.get('history')))
