@@ -1607,6 +1607,8 @@ class Service:
         understanding=await self.ai.understand_turn(context, images=images or None)
         if not self.store.still_current(job):
             return None
+        if images:
+            self._remember_screenshot(job, images, understanding, context)
         self._last_turn_context=context
         from .payment_case import resolve_payment
         payment=await resolve_payment(self, job, understanding, context)
@@ -1665,6 +1667,30 @@ class Service:
         await self.maybe_followup_alert(job, answer)
         await self.maybe_owner_alert(job, answer)
         return answer
+
+
+    def _remember_screenshot(self, job, images, understanding, context):
+        """Owner 24.11.2026: what the model read on a screenshot stays with the message (no secrets), so the
+        hard rules see it now and later turns and Alexander's card see «[скриншот: …]»."""
+        try:
+            from .privacy import sensitive, scrub
+            seen=' '.join(str((understanding or {}).get('image_text') or '').split())[:600]
+            if not seen or sensitive(seen):
+                return
+            seen=scrub(seen)
+            for picture in images:
+                row=self.store.db.execute('SELECT media FROM messages WHERE chat=? AND mid=?',(job['chat'],picture.get('mid'))).fetchone()
+                if not row:continue
+                media=json.loads(row['media'] or '{}')
+                if isinstance(media,dict) and media.get('kind')=='photo':
+                    media['seen']=seen
+                    self.store.db.execute('UPDATE messages SET media=? WHERE chat=? AND mid=?',(json.dumps(media),job['chat'],picture.get('mid')))
+            context['images']=len(images)
+            context['burst']=(str(context.get('burst') or '').strip()+' [скриншот: '+seen+']').strip()
+            if isinstance(understanding,dict):
+                understanding['summary']=(str(understanding.get('summary') or '')+' На скрине: '+seen)[:900]
+        except Exception:
+            logging.warning('Screenshot reading was not saved')
 
     @staticmethod
     def _step_question(context, images=None):

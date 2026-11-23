@@ -235,7 +235,7 @@ class StressModel:
                 'refund_service': str((turn.get('collected') or {}).get('service') or ''),
                 'refund_reason': str((turn.get('collected') or {}).get('reason') or ''),
                 'risk': 'instruct', 'order_number': turn.get('order_number') or '',
-                'receipt_amount_unverified': '',
+                'receipt_amount_unverified': '', 'image_text': turn.get('image_text') or '',
                 'reply': reply, 'summary': 'Проверка диалога ' + str(turn.get('id') or '')}
 
 

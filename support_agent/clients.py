@@ -316,6 +316,7 @@ class OpenAI:
                                                          'promise', 'unverified']},
                       'order_number': {'type': 'string'},
                       'receipt_amount_unverified': {'type': 'string'},
+                      'image_text': {'type': 'string', 'maxLength': 600},
                       'reply': {'type': 'string', 'minLength': 1, 'maxLength': 3000},
                       'summary': {'type': 'string', 'maxLength': 700}},
                   'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
@@ -324,7 +325,7 @@ class OpenAI:
                                'setup_password', 'setup_recovery', 'reask_advisories', 'matched_tariff_ids',
                                'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic', 'situation', 'situations',
                                'beyond_owner_fact', 'refund_order', 'refund_service', 'refund_reason',
-                               'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
+                               'risk', 'order_number', 'receipt_amount_unverified', 'image_text', 'reply', 'summary']}
         from .turn_understanding import model_input_text
         content = [{'type': 'input_text', 'text': model_input_text(context)}]
         for picture in images or []:

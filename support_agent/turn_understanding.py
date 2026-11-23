@@ -4,6 +4,7 @@ The model decides intent, service and tariff. Code only checks those ids against
 the catalogue, checks prices in the draft, and decides whether the draft states
 a result that the owner must confirm. Keyword hints are not decisions.
 """
+import json
 import re
 
 from .dialog_state import load, save
@@ -59,6 +60,18 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Если клиент снова прямо спрашивает про этот совет, добавь его id в reask_advisories и можно повторить. '
     'Иначе vpn_advice=false и reask_advisories пустой. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
+    'СКРИНШОТ (владелец 24.11.2026): внимательно прочитай всё на изображении и ответь по ситуации, как ответил бы Александр. '
+    '1) Пойми, что это: какой сервис или приложение (ChatGPT, Claude, Gemini, Midjourney, App Store, наш бот @neirosetkaa_bot, банк, FreeKassa и т. п.), какой экран и что на нём написано. '
+    '2) В image_text коротко по-русски опиши увиденное: сервис, экран, тариф или статус, текст ошибки (можно дословно, кратко). '
+    'Никогда не переписывай в image_text и в ответ пароли, коды, токены, почты, номера карт и телефонов. '
+    '3) Сопоставь с правилами и ответами Александра (owner_topic, переписка выше) и дай конкретные шаги по порядку: '
+    'виден активный платный тариф — порадуйся, что всё получилось; ошибка страны или региона — совет по VPN одной страны; '
+    'ошибка оплаты в банке, боте или FreeKassa — новый заказ через /start в @neirosetkaa_bot и оплата по СБП; '
+    'после активации виден бесплатный тариф — выйти и зайти снова через 10–15 минут с VPN одной страны, если не помогло — Александр проверит; '
+    'чек — номер заказа, если его ещё нет, Александр проверит оплату; экран нашего бота — подскажи, какую кнопку нажать дальше; '
+    'запрос кода или подтверждения входа — по правилам этого сервиса, код в чат не повторяй. '
+    '4) Если на скрине мелко или непонятно, что нужно клиенту, опиши, что видишь, и задай один уточняющий вопрос. '
+    'Не утверждай, что подписка активирована или оплата прошла, только потому что так написано на скрине: можно сказать, что на скрине виден тариф, и порадоваться. '
     'Голос уже расшифрован в тексте сообщения. '
     '@Neirosetkaalex — это и есть этот чат с Александром: никогда не предлагай клиенту «написать Александру в @Neirosetkaalex». Если клиента направили сюда за подпиской с курса — тема course_bonus_start; если по бонусу с курса выбран Claude — course_bonus_claude. '
     'Кроме нейросетей Александр помогает с PlayStation и Xbox: подписки, покупка игр, пополнение баланса — тема games_consoles. '
@@ -171,6 +184,20 @@ DIALOG_LIMIT = 15
 DIALOG_CHARS = 6000
 
 
+def with_picture(text, media):
+    """Owner 24.11.2026: a screenshot is part of the conversation. Later turns, hard rules and Alexander see
+    «[скриншот: …]» with what the model read on it, instead of an empty message."""
+    try:
+        meta = json.loads(media or '{}') if isinstance(media, str) else (media or {})
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(meta, dict) or meta.get('kind') != 'photo':
+        return text
+    seen = str(meta.get('seen') or '').strip()
+    mark = '[скриншот: ' + seen + ']' if seen else '[клиент прислал скриншот]'
+    return (str(text or '').strip() + ' ' + mark).strip()
+
+
 def burst_and_window(db, chat, limit=DIALOG_LIMIT, max_chars=DIALOG_CHARS):
     """The client's newest messages (burst) and the last ~15 messages of the chat (≤6k chars).
 
@@ -178,12 +205,12 @@ def burst_and_window(db, chat, limit=DIALOG_LIMIT, max_chars=DIALOG_CHARS):
     The oldest messages are dropped first when the window is longer than max_chars; the burst stays.
     """
     rows = db.execute(
-        '''SELECT mid, role, text, at FROM messages
+        '''SELECT mid, role, text, at, media FROM messages
            WHERE chat=? AND role IN ('client','assistant','owner')
            ORDER BY mid DESC LIMIT ?''', (chat, limit)).fetchall()
     window = [{'role': row['role'],
                'authority': 'owner' if row['role'] == 'owner' else 'untrusted',
-               'text': row['text'] or '', 'at': row['at']} for row in reversed(rows)]
+               'text': with_picture(row['text'] or '', row['media']), 'at': row['at']} for row in reversed(rows)]
     burst = []
     for message in reversed(window):
         if message['role'] in ('assistant', 'owner') and burst:
