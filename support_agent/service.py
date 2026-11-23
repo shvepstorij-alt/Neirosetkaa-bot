@@ -99,6 +99,23 @@ TELEGRAM_HINTS={401:'токен бота недействителен — про
                 429:'Telegram временно ограничил частоту запросов — подождите несколько минут'}
 
 
+def model_failure(exc):
+    """Owner 24.11.2026: «Сбой разбора: RemoteError» said nothing. Name the OpenAI reason, status and what to do."""
+    reason=str(getattr(exc,'reason','') or '')
+    status=getattr(exc,'status',None)
+    code=str(getattr(exc,'api_code','') or '')
+    param=str(getattr(exc,'param','') or '')
+    hint=str(getattr(exc,'api_hint','') or '')
+    parts=[type(exc).__name__]+[x for x in (reason,str(status) if status else '',code,param) if x]
+    advice={'api_timeout':'модель не ответила за 150 секунд','api_transport':'нет связи с OpenAI',
+            'draft_incomplete':'модель оборвала ответ'}.get(reason,'')
+    if status==429:advice='лимит или баланс OpenAI — проверьте оплату и лимиты в OpenAI'
+    elif status in (401,403):advice='ключ OpenAI не принят — проверьте OPENAI_API_KEY'
+    elif status==404:advice='модель не найдена — проверьте SUPPORT_MODEL'
+    elif status==400:advice='OpenAI отклонил запрос'+(': '+hint if hint else '')
+    return ' '.join(parts)+(' — '+advice if advice else '')
+
+
 def remote_detail(exc):
     """Owner 21.11.2026: «Polling failed: RemoteError» said nothing. Name the safe reason, HTTP status and what to do."""
     reason=str(getattr(exc,'reason','') or '')
@@ -1125,6 +1142,11 @@ class Service:
             except (ValueError,TypeError):kind='unsupported'
             if kind in ('sensitive','manual_text_file','unsupported'):
                 return 'Этап: допуск AUTO. Во входящем обращении есть вложение или данные для ручного разбора; автоматическая отправка запрещена.'
+        if self.auto_for_all:
+            # Owner 24.11.2026: AUTO for all clients uses the owner's gate (real hand-over and safety rules only).
+            from .auto_policy import owner_gate
+            return owner_gate({'reply':d['text'],'summary':d['summary'],'handoff':bool(d['handoff'])},
+                              self.store.evidence(d['id']),current)
         return block_reason({'reply':d['text'],'summary':d['summary'],'handoff':bool(d['handoff'])},
                             self.store.evidence(d['id']),current)
 
@@ -1457,7 +1479,7 @@ class Service:
                     from .handoff import handoff_text
                     why=('дневной лимит запросов к модели исчерпан — поднимите SUPPORT_DAILY_CALL_LIMIT'
                          if 'limit' in str(exc).lower() else 'модель вернула ответ не по формату' if 'intent' in str(exc)
-                         else type(exc).__name__)
+                         else model_failure(exc))
                     fallback={'reply':handoff_text(),'summary':'Разбор хода не завершился: '+why+'.',
                               'handoff':True,'source_ids':[],
                               'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',

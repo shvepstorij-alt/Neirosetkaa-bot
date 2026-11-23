@@ -246,21 +246,32 @@ class OpenAI:
             if type(payload.get('max_output_tokens')) is int:
                 payload['max_output_tokens']+=4000
             kwargs=dict(kwargs,json=payload)
-        try:
-            async with self.session.post('https://api.openai.com/v1/'+path,headers=self.headers,**kwargs) as r:
-                if r.status!=200:
-                    try:
-                        payload=await r.json()
-                    except Exception:
-                        payload={}
-                    raise api_error(r.status,payload)
-                return await r.json()
-        except RemoteError:
-            raise
-        except asyncio.TimeoutError:
-            raise RemoteError('OpenAI timeout; not retried',reason='api_timeout') from None
-        except Exception:
-            raise RemoteError('OpenAI transport failed; not retried',reason='api_transport') from None
+        if path=='responses' and 'timeout' not in kwargs:
+            # Owner 24.11.2026 (live clients: «Сбой разбора: RemoteError»): a long reasoning answer must not be cut
+            # by the 75-second session limit.
+            import aiohttp
+            kwargs=dict(kwargs,timeout=aiohttp.ClientTimeout(total=150))
+        for attempt in (1,2):
+            try:
+                async with self.session.post('https://api.openai.com/v1/'+path,headers=self.headers,**kwargs) as r:
+                    if r.status!=200:
+                        try:
+                            payload=await r.json()
+                        except Exception:
+                            payload={}
+                        raise api_error(r.status,payload)
+                    return await r.json()
+            except RemoteError as exc:
+                # One retry for a busy or briefly failing OpenAI; a rejected request (400/401/403) is not repeated.
+                if attempt==1 and getattr(exc,'status',None) in (429,500,502,503,504):
+                    await asyncio.sleep(3);continue
+                raise
+            except asyncio.TimeoutError:
+                raise RemoteError('OpenAI timeout; not retried',reason='api_timeout') from None
+            except Exception:
+                if attempt==1:
+                    await asyncio.sleep(2);continue
+                raise RemoteError('OpenAI transport failed',reason='api_transport') from None
 
     async def understand_turn(self, context, images=None):
         """One call: read the turn, including photos, and draft the client reply."""

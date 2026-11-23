@@ -342,3 +342,40 @@ def real_stop_reason(answer, evidence=None, current_text=''):
     if not str((answer or {}).get('reply') or '').strip():
         return 'пустой ответ'
     return None
+
+
+_OWNER_HOLDS = ('conflict_hold', 'owner_alignment_hold', 'stale_price_hold', 'owner_fact_hold', 'repeat_hold',
+                'refund_hold', 'owner_step_hold', 'situation_hold', 'manual_secret_intake')
+
+
+def owner_gate(answer, evidence=None, current_text=''):
+    """Owner 24.11.2026 («AUTO для всех»): the same gate the owner checked in /bench and /live.
+
+    The pilot gate (block_reason) let through only answers with stored source checks and turned ordinary
+    consultations («Привет! Тут?», «Как оплатить Гпт») into «Александр ответит…». Now an answer goes out by
+    itself unless it is a real hand-over to Alexander or breaks a safety rule: access data in the reply, a claim
+    that payment/activation/refund is done, or a promised bonus.
+    """
+    if not isinstance(answer, dict):
+        return _reason('ответ отсутствует или имеет неверный тип.')
+    reply = str(answer.get('reply') or '').strip()
+    if not reply:
+        return _reason('пустой ответ.')
+    meta = evidence if isinstance(evidence, dict) else answer.get('evidence') or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    for key in _OWNER_HOLDS:
+        if meta.get(key):
+            return _reason(str(meta.get('diagnostic') or meta.get('handoff_reason') or real_stop_reason(answer, meta) or key))
+    if answer.get('handoff') is True:
+        return _reason(str(meta.get('handoff_reason') or 'ответ передаёт вопрос Александру.'))
+    from .privacy import sensitive
+    if sensitive(reply):
+        return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
+    from .completion_claims import has_completion_claim
+    if has_completion_claim(reply):
+        return _reason('ответ утверждает, что оплата, активация или возврат уже выполнены; это проверяет Александр.')
+    from .dialog_state import grants_unverified_benefit
+    if grants_unverified_benefit(reply):
+        return _reason('ответ подтверждает выдачу бонуса или льготы; это решает Александр.')
+    return None
