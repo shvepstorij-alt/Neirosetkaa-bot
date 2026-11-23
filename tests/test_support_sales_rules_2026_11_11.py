@@ -1494,8 +1494,11 @@ class OwnerStepAndAutoGateTests(unittest.TestCase):
     def test_auto_only_in_proven_situations(self):
         from support_agent.playbook import auto_hold_reason
         self.assertIsNone(auto_hold_reason('buy', {'situations': ['price']}))
-        self.assertIsNotNone(auto_hold_reason('owner_step'))
-        self.assertIsNotNone(auto_hold_reason('buy', {'situations': ['account_login']}))
+        # Owner 23.11.2026: everything except refunds/blocks/«other» edge goes out by itself.
+        self.assertIsNone(auto_hold_reason('owner_step'))
+        self.assertIsNone(auto_hold_reason('buy', {'situations': ['account_login']}))
+        self.assertIsNotNone(auto_hold_reason('refund_complaint'))
+        self.assertIsNotNone(auto_hold_reason('buy', {'situations': ['blocked']}))
         self.assertIsNone(auto_hold_reason(''))
 
     def test_holds_block_auto(self):
