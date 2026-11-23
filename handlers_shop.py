@@ -2338,3 +2338,37 @@ async def pay_stars(cb: CallbackQuery):
                     show_alert=True)
 
 
+
+
+
+# ── «🛒 Каталог» с нижней клавиатуры (23.11.2026) ────────────────────────
+# Кнопка теперь обычная: отвечаем инлайн-кнопкой мини-приложения.
+async def _send_catalog_button(message: Message, refresh_kb: bool = False):
+    from aiogram.types import WebAppInfo
+    from config import webapp_url
+    if refresh_kb:
+        try:
+            from keyboards import kb_reply
+            from config import is_admin
+            await message.answer("🔄 Обновил кнопки внизу.",
+                                 reply_markup=kb_reply(is_admin(message.from_user.id)))
+        except Exception as e:
+            logging.warning(f"catalog kb refresh: {e}")
+    await message.answer(
+        "🛒 <b>Каталог</b> — подписки на ИИ-сервисы, App Store и виртуальные номера.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="🛒 Открыть каталог", style="success",
+            web_app=WebAppInfo(url=webapp_url("/webapp/shop")))]]))
+
+
+@dp.message(F.text == "🛒 Каталог", StateFilter("*"))
+async def reply_catalog(message: Message, state: FSMContext):
+    await _send_catalog_button(message)
+
+
+# Старая нижняя кнопка (web_app) у клиентов ещё висит. Каталог, открытый с неё,
+# присылает сюда sendData — отвечаем рабочей кнопкой и меняем клавиатуру.
+@dp.message(F.web_app_data)
+async def webapp_data_catalog(message: Message, state: FSMContext):
+    await _send_catalog_button(message, refresh_kb=True)

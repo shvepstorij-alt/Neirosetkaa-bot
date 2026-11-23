@@ -303,6 +303,7 @@ function _api(path, body){
    Вместо непонятной ошибки — подсказка и кнопка перезапуска. 20.11.2026 */
 function _authExpired(){
   if(document.getElementById('auth-exp'))return;
+  if(!_getInitData()){ var _t=window.Telegram&&Telegram.WebApp; if(_t&&_t.sendData){ _authBannerIfNeeded(); return; } }
   var d=document.createElement('div'); d.id='auth-exp';
   d.style.cssText='position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:var(--bg2,#1c1c1e);border:1px solid var(--border,#333);border-radius:16px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);font-size:14px;line-height:1.4';
   d.innerHTML='<b>🔄 Обнови магазин</b><div style="margin:6px 0 10px;color:var(--text2,#aaa)">Для покупки нужно обновить данные Telegram: закрой магазин, отправь боту <b>/start</b> и открой «Каталог» заново.</div>'
@@ -619,7 +620,7 @@ function doGenVideo(){
     if(!res){ restore(); return; }
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'video',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
-    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
+    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML=_authFixHtml(); }
     else if(d&&d.msg){ res.innerHTML='<div class="pm-err">'+d.msg+'</div>'; }
     else { res.innerHTML='<div class="pm-err">Не удалось запустить генерацию. Попробуй ещё раз.</div>'; }
     restore();
@@ -760,7 +761,7 @@ function doGenEdit(){
       _histSave(d.img,p);
       window._editBusy=false; renderGen(); return;
     } else if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
-    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
+    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML=_authFixHtml(); }
     else if(d&&d.msg){ res.innerHTML='<div class="pm-err">'+d.msg+'</div>'; }
     else { res.innerHTML='<div class="pm-err">Не получилось изменить фото. Попробуй другой промт.</div>'; }
     restore();
@@ -809,7 +810,7 @@ function doGenAnim(){
     if(!res){ restore(); return; }
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'anim',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
-    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
+    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML=_authFixHtml(); }
     else if(d&&d.msg){ res.innerHTML='<div class="pm-err">'+d.msg+'</div>'; }
     else { res.innerHTML='<div class="pm-err">Не удалось запустить анимацию. Попробуй ещё раз.</div>'; }
     restore();
@@ -836,7 +837,7 @@ function doGen(){
     } else if(d&&d.error==='credits'){
       res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>';
     } else if(d&&String(d.error||'').indexOf('auth')===0){
-      res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>';
+      res.innerHTML=_authFixHtml();
     } else if(d&&d.msg){
       res.innerHTML='<div class="pm-err">'+d.msg+'</div>';
     } else {
@@ -1045,7 +1046,7 @@ function payVia(el,key,idx,method,useCoins){
     else{
       var _err=(d&&d.error)||'';
       var m;
-      if(_err.indexOf('auth')===0){ m='Приложение открылось без данных Telegram.<br><br>1) Закрой это мини-приложение (кнопка «Закрыть» вверху)<br>2) В боте напиши команду <b>/start</b><br>3) Снова открой «🛒 Каталог» и повтори оплату.'; }
+      if(_err.indexOf('auth')===0){ m=_authFixText(); }
       else if(_err==='card_failed'){ m='Картой не удалось — попробуй СБП'+((d&&d.coinsBack)?('.<br>🪙 '+d.coinsBack+'₽ монетками вернулись на баланс.'):''); }
       else if(_err==='promo'){ m=_h((d&&d.msg)||'Промокод больше не действует')+'<br>Цена без промокода — '+((CATALOG[key]&&((CATALOG[key].plans||[]).filter(function(p){return p.idx===idx;})[0]||{}).price)||'')+'₽.'; window._shopPromo=null; }
       else if(_err==='stale'){ m='Тарифы обновились 🔄<br><br>Закрой это мини-приложение и открой «🛒 Каталог» заново — покажу актуальные цены.'; }
@@ -1457,6 +1458,24 @@ function smsPay(el,country,method,price,useCoins,op){
     row.innerHTML='<div class="pm-err">'+m+'</div>'+(d&&d.error==='stale'?'<div class="plan-buy" style="margin-top:8px" onclick="smsOffers(window._smsProd)">Обновить цены</div>':'');
   });
 }
+
+/* Каталог, открытый со старой нижней кнопки, запускается БЕЗ данных входа
+   Telegram — оплата невозможна. Кнопка «Продолжить» отправляет боту сигнал
+   (sendData): бот сам пришлёт рабочую кнопку и обновит клавиатуру. 23.11.2026 */
+function _authFixText(){ return 'Каталог открыт со старой кнопки — с неё Telegram не передаёт данные для оплаты.<br><br><span class="plan-buy" style="display:inline-block;margin-top:6px;padding:9px 14px" onclick="_authFix()">Продолжить ➜</span><br><span style="font-size:12px;color:var(--text3)">Бот пришлёт новую кнопку «Открыть каталог» — через неё всё оплатится.</span>'; }
+function _authFixHtml(){ return '<div class="pm-err">'+_authFixText()+'</div>'; }
+function _authFix(){
+  try{ var t=window.Telegram&&Telegram.WebApp; if(t&&t.sendData){ t.sendData('open_catalog'); return; } }catch(e){}
+  try{ Telegram.WebApp.close(); }catch(e){}
+}
+function _authBannerIfNeeded(){
+  if(_getInitData()) return;
+  var t=window.Telegram&&Telegram.WebApp; if(!t||!t.sendData) return;
+  var d=document.createElement('div');
+  d.style.cssText='position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:var(--bg2,#1c1c1e);border:1px solid var(--border,#333);border-radius:16px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);font-size:14px;line-height:1.4';
+  d.innerHTML='<b>🔄 Обнови кнопку каталога</b><div style="margin:6px 0 10px;color:var(--text2,#aaa)">Каталог открыт со старой кнопки — оплата через неё не пройдёт. Нажми «Продолжить»: бот пришлёт новую кнопку.</div><div class="plan-buy" style="margin:0" onclick="_authFix()">Продолжить</div>';
+  document.body.appendChild(d);
+}
 /* ─── Панель ─── */
 function _kbHide(){ try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){} }
 function _min(){ _kbHide(); try{ if(tg&&typeof tg.minimize==='function'){tg.minimize();return;} }catch(e){} }
@@ -1474,6 +1493,7 @@ function _init(){
   CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
   BOT_USERNAME=window.__BOT__||BOT_USERNAME;
   renderShopHead(); renderBanners(); renderChips(); renderGrid();
+  setTimeout(_authBannerIfNeeded,600);
   /* Цены клиента партнёра. В страницу вшита розница (сервер при отдаче HTML
      не знает, кто открыл), поэтому свои цены дозапрашиваем и перерисовываем.
      Считает их сервер — в JS формулу не дублируем, иначе округление разойдётся

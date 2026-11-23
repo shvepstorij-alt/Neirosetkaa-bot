@@ -345,7 +345,11 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="🛒 Каталог", web_app=WebAppInfo(url=webapp_url("/webapp/shop")))]
+        # Обычная кнопка, НЕ web_app: мини-приложение, открытое с нижней
+        # клавиатуры, Telegram запускает без данных входа — оплата падала
+        # с «откройте заново /start» по кругу (23.11.2026). Бот отвечает на
+        # неё инлайн-кнопкой, с которой данные передаются.
+        [KeyboardButton(text="🛒 Каталог")]
             if WEBAPP_BASE_URL else [KeyboardButton(text="🛍️ Магазин")],
         [KeyboardButton(text="📷 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],

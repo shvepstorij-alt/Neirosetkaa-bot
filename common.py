@@ -2938,7 +2938,27 @@ async def _shop_hidden_set() -> set:
         return set()
 
 
+_INJECT_CACHE: dict = {}
+_INJECT_TTL = 90  # сек
+
+
 async def _inject_recs(html: str, exclude_key: str) -> str:
+    """Кэш на 90 с: каталог одинаковый для всех, а сборка страницы с логотипами
+    (десятки запросов к базе и картинки data-URI) заметно тормозила открытие
+    мини-приложения на телефоне. 23.11.2026"""
+    import time as _t_ic, hashlib as _h_ic
+    _key = (_h_ic.md5(html.encode("utf-8", "ignore")).hexdigest(), exclude_key)
+    _hit = _INJECT_CACHE.get(_key)
+    if _hit and _t_ic.time() - _hit[0] < _INJECT_TTL:
+        return _hit[1]
+    out = await _inject_recs_build(html, exclude_key)
+    if len(_INJECT_CACHE) > 20:
+        _INJECT_CACHE.clear()
+    _INJECT_CACHE[_key] = (_t_ic.time(), out)
+    return out
+
+
+async def _inject_recs_build(html: str, exclude_key: str) -> str:
     """Вставляет window.__RECS__ / __CATALOG__ / __BOT__ в <head> мини-аппки."""
     import json as _json
     try:
@@ -3084,8 +3104,13 @@ async def webapp_shop_handler(request: web.Request) -> web.Response:
         with open(_SHOP_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             _html = _f.read()
         _html = await _inject_recs(_html, exclude_key="")
-        return web.Response(text=_html, content_type="text/html", charset="utf-8",
-                            headers=_NO_CACHE_HEADERS)
+        _resp = web.Response(text=_html, content_type="text/html", charset="utf-8",
+                             headers=_NO_CACHE_HEADERS)
+        try:
+            _resp.enable_compression()   # gzip: страница с логотипами весит много
+        except Exception:
+            pass
+        return _resp
     except FileNotFoundError:
         return web.Response(text="Shop Mini App not found", status=404)
 
