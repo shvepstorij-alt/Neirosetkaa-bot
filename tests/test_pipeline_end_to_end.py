@@ -55,5 +55,12 @@ class PipelineEndToEnd(unittest.TestCase):
         self.assertNotIn('Выберите нужный сервис и тариф', out['reply'])
 
 
+    def test_paid_claude_gets_risks_and_consent(self):
+        # Owner 24.11.2026: «Оплатила Клода. Поможете активировать» got only «номер заказа и скриншот».
+        out = self.ask('Добрый вечер.\nОплатила Клода.\nПоможете активировать, пожалуйста.', owner_topic='what_next')
+        self.assertIn('гарантии на Claude нет', out['reply'])
+        self.assertIn('согласны с этими рисками', out['reply'])
+
+
 if __name__ == '__main__':
     unittest.main()
