@@ -230,7 +230,7 @@ class Service:
         parts=text.strip().split()
         if not parts:return
         cmd=parts[0].split('@')[0]
-        readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','/stats','/review','control:refresh','auto:settings')
+        readonly=(cmd in ('/start','/status','/auto','/diag','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','/stats','/review','control:refresh','auto:settings')
                   or cmd in ('delay:view','delay:custom') or cmd=='/delay' and len(parts)==1
                   or cmd in ('/help','menu:settings','menu:tests','menu:stats')
                   or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:','more:','info:')))
@@ -417,23 +417,27 @@ class Service:
                 self.store.delete_messages(d['business_connection_id'],d['chat']['id'],d['message_ids'])
             return
         m=update.get('business_message') or update.get('edited_business_message')
-        if not m or m.get('chat',{}).get('type')!='private' or m['chat']['id'] not in self.allowed:
+        from .diag import note_business  # owner 23.11.2026: a dropped message must be visible in /diag
+        if not m or m.get('chat',{}).get('type')!='private':
             return
+        if m['chat']['id'] not in self.allowed:
+            note_business(self.store,'not_allowed');return
         ident=m.get('business_connection_id')
         if not ident:
-            return
+            note_business(self.store,'no_connection');return
         if not self.store.db.execute('SELECT 1 FROM connections WHERE id=?',(ident,)).fetchone():
             await self.load_connection(ident)
         con=self.store.db.execute('SELECT * FROM connections WHERE id=?',(ident,)).fetchone()
         if not con or not con['enabled']:
-            return
+            note_business(self.store,'connection_disabled');return
         # Bots' outgoing messages must not masquerade as manual owner replies.
         if m.get('sender_business_bot'):
             return
         sender=m.get('from',{}).get('id')
         uid=m['chat']['id']
         if sender not in (uid,self.owner):
-            return
+            note_business(self.store,'foreign_sender');return
+        note_business(self.store)
         role='owner' if sender==self.owner else 'client'
         raw=m.get('text') or m.get('caption') or ''
         secret=sensitive(raw)
@@ -668,6 +672,15 @@ class Service:
             self.store.switch('off')
             if admin_mid is not None:await self.show_control(admin_mid)
             else:await self.owner_message('Помощник остановлен. Черновики отменены. Уже отправленный Telegram запрос остановка не отзывает.')
+        elif cmd=='/diag':
+            from .diag import report
+            text,rows=report(self)
+            await self.admin_panel(text,rows,admin_mid)
+        elif cmd=='diag:unpause':
+            from .diag import unpause_all,report
+            n=unpause_all(self.store)
+            text,rows=report(self)
+            await self.admin_panel('Пауза снята в %d чат(ах). Помощник снова отвечает в них на новые сообщения.\n\n'%n+text,rows,admin_mid)
         elif cmd in ('/draft','global:draft'):
             self.store.switch('draft')
             if admin_mid is not None:await self.show_control(admin_mid)
@@ -1180,6 +1193,8 @@ class Service:
         try:
             # The owner's own press is never blocked by the pause his manual replies create.
             if automatic and self.store.manual_pause_blocks(c['id'], time.time()):
+                from .auto_panel import record
+                record(self.store,c['id'],did,'auto_blocked','Вы писали в этом чате меньше 10 минут назад — помощник не отправил ответ, чтобы не перебивать вас.')
                 return
             reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_owner_send(did,time.time()))
             if not reserved:
