@@ -53,6 +53,7 @@ async def run_bench(service, mode='new'):
             return
     store = Store(':memory:', batch_seconds=300)
     isolated = Service(store, NoTelegram(), service.ai, CatalogOnly(service.shop, service.owner), 0, {-1})
+    isolated.lessons_db = service.store.db  # owner 24.11.2026: checks run with the approved lessons
     calls = 0
 
     def charge(reason='model'):

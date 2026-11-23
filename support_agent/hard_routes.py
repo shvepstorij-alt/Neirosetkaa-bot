@@ -405,8 +405,13 @@ def _paid_service_step(burst, context):
         return ''
     row = rows[0]
     kind = kind_for(row.get('service_id'), row.get('plan') if len(rows) == 1 else '', (context or {}).get('tariffs'), row.get('service'))
-    if kind in ('shop', 'chatgpt_auto', 'chatgpt_manual', 'chatgpt_new_account', 'claude_manual', 'claude_login'):
-        return ''  # these need the order itself: the button, the plan or the risks come from the order flow
+    if str(row.get('service_id') or '').startswith('claude') or kind in ('claude_manual', 'claude_login', 'claude_auto'):
+        # Owner 24.11.2026 («Оплатила Клода. Поможете активировать?» got only «номер заказа и скриншот»):
+        # after a Claude payment the risks and the consent come first, as in the paid-order flow.
+        from .paid_notice import steps_for
+        return 'Спасибо за оплату 🙂 ' + steps_for('claude_manual', row.get('service') or 'Claude', row.get('plan') if len(rows) == 1 else '')
+    if kind in ('shop', 'chatgpt_auto', 'chatgpt_manual', 'chatgpt_new_account'):
+        return ''  # these need the order itself: the button or the plan come from the order flow
     step = str(_after(load_guide(), kind, '', None, row.get('service')) or '').strip()
     step = re.sub(r'^После оплаты\s+', '', step)
     return ('Спасибо за оплату 🙂 ' + step[:1].upper() + step[1:]) if step else ''

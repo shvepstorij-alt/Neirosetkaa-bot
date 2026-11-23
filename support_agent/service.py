@@ -247,7 +247,7 @@ class Service:
         parts=text.strip().split()
         if not parts:return
         cmd=parts[0].split('@')[0]
-        readonly=(cmd in ('/start','/status','/auto','/diag','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','/stats','/review','control:refresh','auto:settings')
+        readonly=(cmd in ('/start','/status','/auto','/diag','/lessons','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','/stats','/review','control:refresh','auto:settings')
                   or cmd in ('delay:view','delay:custom') or cmd=='/delay' and len(parts)==1
                   or cmd in ('/help','menu:settings','menu:tests','menu:stats')
                   or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:','more:','info:')))
@@ -689,6 +689,29 @@ class Service:
             self.store.switch('off')
             if admin_mid is not None:await self.show_control(admin_mid)
             else:await self.owner_message('Помощник остановлен. Черновики отменены. Уже отправленный Telegram запрос остановка не отзывает.')
+        elif cmd=='/night':
+            self._night_task=asyncio.create_task(self.night_review(manual=True))
+            await self.owner_message('🌙 Запустил разбор ответов за последние сутки. Пришлю итог, когда закончу.')
+        elif cmd=='/learn':
+            await self.learn_now(manual=True)
+        elif cmd=='/lessons':
+            from .learning import listing
+            text,rows=listing(self.store.db)
+            await self.admin_panel(text,rows,admin_mid)
+        elif cmd=='/lesson' and len(parts)>=3 and parts[1].isdigit():
+            from .learning import edit as edit_lesson
+            ok=edit_lesson(self.store.db,int(parts[1]),text.strip().split(None,2)[2])
+            await self.owner_message('Урок №%s %s.'%(parts[1],'сохранён и действует' if ok else 'не найден или текст слишком короткий'))
+        elif cmd.startswith('lesson:'):
+            from .learning import decide,remove,listing
+            _,action,lid=cmd.split(':')
+            if action=='del':
+                remove(self.store.db,int(lid))
+                text,rows=listing(self.store.db)
+                await self.admin_panel('Урок №%s убран.\n\n'%lid+text,rows,admin_mid)
+            else:
+                decide(self.store.db,int(lid),action=='ok')
+                await self.admin_panel('🎓 Урок №%s: %s'%(lid,'утверждён ✅ — помощник отвечает с его учётом.' if action=='ok' else 'отклонён.'),[],admin_mid)
         elif cmd=='/diag':
             from .diag import report
             text,rows=report(self)
@@ -1581,6 +1604,8 @@ class Service:
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
+        from .learning import active as active_lessons
+        context['owner_lessons']=active_lessons(getattr(self,'lessons_db',None) or self.store.db)
         from .turn_understanding import owner_open_step
         from . import paid_notice as _paid
         from .playbook import tidy
@@ -2737,9 +2762,86 @@ class Service:
             self.active_chats.discard(job['chat'])
         return True
 
+    async def learn_now(self, manual=False):
+        """Owner 24.11.2026: propose lessons from live dialogs; Alexander approves each one."""
+        from .learning import signals, propose, card
+        try:
+            cases=signals(self.store.db,time.time()-7*86400)
+            if not cases:
+                if manual:await self.owner_message('🎓 Новых случаев для обучения нет: нет черновиков, которые вы исправили или дописали, и жалоб клиентов.')
+                return
+            new=await propose(self,cases)
+            if not new:
+                if manual:await self.owner_message('🎓 Разобрал %d случ. — новых уроков нет, всё уже покрыто.'%len(cases))
+                return
+            await self.owner_message('🎓 Разобрал %d случ. из живых диалогов. Предлагаю уроков: %d. Утвердите нужные.'%(len(cases),len(new)))
+            for row in new:
+                text,rows=card(row)
+                await self.owner_message(text,buttons(rows))
+        except Exception as exc:
+            logging.warning('Learning failed: %s',remote_detail(exc))
+            if manual:await self.owner_message('🎓 Не получилось разобрать диалоги: '+model_failure(exc))
+
+    async def night_review(self, manual=False):
+        """Owner 24.11.2026: every evening review all of the day's answers; lessons go to Alexander for approval."""
+        from . import nightly_review as nr
+        from .learning import add_proposals, card, mark_seen
+        day=dt.datetime.now(nr.LOCAL).date().isoformat()
+        try:
+            items=nr.collect(self.store.db,time.time()-86400)
+            if not items:
+                if manual:await self.owner_message('🌙 За последние сутки ответов помощника не было.')
+                return
+            grades={}
+            try:
+                grades=await nr.review(self,items)
+            except ValueError:
+                await self.owner_message('🌙 Разбор остановлен: дневной лимит запросов к модели. Проверено, сколько успел.')
+            nr.save(self.store.db,grades,day)
+            mark_seen(self.store.db,list(grades))
+            await self.owner_message(nr.report_text(items,grades,day))
+            try:
+                await self.tg.send_text_file(self.owner,'night_%s.txt'%day,nr.report_file(items,grades,day),
+                                             'Слабые ответы за день и как надо было ответить.')
+            except Exception:
+                logging.warning('Night review file not sent')
+            new=add_proposals(self.store.db,nr.lesson_candidates(grades))
+            if new:
+                await self.owner_message('🎓 Из разбора предлагаю уроков: %d. Утвердите нужные — помощник начнёт так отвечать.'%len(new))
+                for row in new:
+                    text,rows=card(row)
+                    await self.owner_message(text,buttons(rows))
+        except Exception as exc:
+            logging.warning('Night review failed: %s',remote_detail(exc))
+            if manual:await self.owner_message('🌙 Разбор не получился: '+model_failure(exc))
+
+    async def maybe_night_review(self):
+        try:
+            from .nightly_review import due,LOCAL
+            last=self.store.get('night:last') if self.store.db.execute("SELECT 1 FROM settings WHERE key='night:last'").fetchone() else ''
+            if due(None,last):
+                self.store.put('night:last',dt.datetime.now(LOCAL).date().isoformat())
+                self._night_task=asyncio.create_task(self.night_review())
+        except Exception:
+            logging.warning('Night review check failed')
+
+    async def maybe_learn(self):
+        """Once a day, at most, when there are at least 3 new cases."""
+        try:
+            last=float(self.store.get('learn:last')) if self.store.db.execute("SELECT 1 FROM settings WHERE key='learn:last'").fetchone() else 0.0
+            if time.time()-last<86400:return
+            self.store.put('learn:last',str(time.time()))
+            from .learning import signals
+            if len(signals(self.store.db,time.time()-7*86400))>=3:
+                self._learn_task=asyncio.create_task(self.learn_now())  # never holds up client answers
+        except Exception:
+            logging.warning('Daily learning check failed')
+
     async def worker(self):
         while True:
             try:
+                await self.maybe_learn()
+                await self.maybe_night_review()
                 await self.work_once()
                 if time.time()-self.daily_cleanup>3600:
                     self.store.cleanup(time.time()-7*86400)

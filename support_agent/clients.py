@@ -281,6 +281,10 @@ class OpenAI:
         # Owner 21.11.2026: the dialog comes first; in Alexander's ongoing conversation his step is priority #1.
         instructions = (priority_header(context) + '\n\n' + IDENTITY_RULES + '\n\n'
                         + business_profile() + '\n\n' + prompt_block() + '\n\n' + UNDERSTANDING_INSTRUCTIONS)
+        from .learning import prompt_block as lessons_block  # owner 24.11.2026: approved lessons from live dialogs
+        lessons = lessons_block((context or {}).get('owner_lessons'))
+        if lessons:
+            instructions += '\n\n' + lessons
         schema = {'type': 'object', 'additionalProperties': False,
                   'properties': {
                       'intent': {'type': 'string', 'enum': ['price', 'how_to', 'list_options', 'choose_tariff',
@@ -461,7 +465,7 @@ class OpenAI:
         instructions += (' Ниже действующие правила Александра (ноябрь 2026). Всё, что в них написано (промокоды NAVSEX и CHATIK10, '
                          'риски Claude, оплата только СБП или «Мир», подписка на месяц без автосписаний, новая почта outlook.com и т. д.), '
                          'НЕ выдумка: если помощник повторил правило, это не ошибка, даже если Александр тогда ответил иначе. '
-                         'Например: услуга Claude Pro + прохождение верификации за 6990 ₽, только загранпаспорт для Claude, '
+                         'Например: услуга Claude Pro + прохождение верификации за 5990 ₽, отдельное прохождение верификации Claude за 3990 ₽, только загранпаспорт для Claude, '
                          'код с почты для Perplexity и Claude Max, Grok → тарифы Cursor, Business 4990 ₽ — это действующие правила. '
                          'Ошибка — если правило не подходит к вопросу клиента или помощник проигнорировал контекст.\n' + rules)
         try:

@@ -359,8 +359,9 @@ def build_cases(catalog):
         'role': 'client', 'text': 'на суно гарантия есть?',
         'owner_topic': 'guarantee',
         'reply': 'Гарантия есть на все сервисы, кроме Claude. На Suno она есть.',
-        'expect': {'hold': False, 'need': ['на весь срок подписки', 'кроме Claude'],
-                   'forbid': ['месяц', 'суток', 'дней']},
+        # Owner 24.11.2026: Claude now has its own guarantee with our verification (the month works unless blocked).
+        'expect': {'hold': False, 'need': ['на весь срок подписки', 'не заблокирует аккаунт'],
+                   'forbid': ['суток', 'дней']},
     }])
     add('guarantee-claude', [{
         'role': 'client', 'text': 'а на клод гарантия есть, если заблокирует?',

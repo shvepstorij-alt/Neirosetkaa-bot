@@ -56,6 +56,7 @@ async def run_dialogs(service, part, cases=None, label=None):
 
     store = Store(':memory:', batch_seconds=300)
     isolated = Service(store, NoTelegram(), service.ai, CatalogOnly(service.shop, service.owner), 0, {-1})
+    isolated.lessons_db = service.store.db  # owner 24.11.2026: checks run with the approved lessons
     isolated.charge_call = charge
     store.switch('draft')
     store.connection('test-only', True, True)

@@ -183,6 +183,7 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None, su
     store = Store(':memory:', batch_seconds=300)
     shop=CatalogOnly(service.shop, service.owner)
     isolated = Service(store, NoTelegram(files), service.ai, shop, 0, {-1})
+    isolated.lessons_db = service.store.db  # owner 24.11.2026: checks run with the approved lessons
     isolated._probe_capture=True
     isolated.charge_call = charge
     store.switch('draft')
