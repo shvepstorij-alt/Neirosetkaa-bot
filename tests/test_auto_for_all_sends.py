@@ -55,3 +55,26 @@ class AutoForAllSends(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OwnerGate(unittest.TestCase):
+    """Owner 24.11.2026 (@antonidrudiger): a good rescued answer was stopped by «Сбой разбора: RemoteError»."""
+
+    def test_rescued_answer_goes_out(self):
+        from support_agent.auto_policy import owner_gate
+        reply = ('Оформить подписку можно в нашем боте @neirosetkaa_bot:\n1. Откройте бота и нажмите «Каталог».\n'
+                 '2. Выберите сервис и нужный тариф.\n3. Оплатите по СБП или картой «Мир».')
+        ev = {'status': 'owner_policy', 'reply_class': 'unverified', 'diagnostic': 'Сбой разбора: RemoteError.'}
+        self.assertIsNone(owner_gate({'reply': reply, 'handoff': False}, ev, 'Привет! Тут?\nКак оплатить Гпт'))
+
+    def test_real_stops_stay(self):
+        from support_agent.auto_policy import owner_gate
+        self.assertIsNotNone(owner_gate({'reply': 'Хорошо', 'handoff': False}, {'refund_hold': True}))
+        self.assertIsNotNone(owner_gate({'reply': 'Александр ответит здесь', 'handoff': True}, {}))
+        self.assertIsNotNone(owner_gate({'reply': 'Подписка активирована!', 'handoff': False}, {}))
+
+    def test_failure_is_named(self):
+        from support_agent.clients import RemoteError
+        from support_agent.service import model_failure
+        self.assertIn('429', model_failure(RemoteError('x', reason='api_http', status=429)))
+        self.assertIn('150 секунд', model_failure(RemoteError('x', reason='api_timeout')))
