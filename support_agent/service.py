@@ -1202,9 +1202,11 @@ class Service:
                     current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
                     now=time.time()
                     if current and current['state']=='ready' and self.store.still_current(current):
-                        chat=self.store.chat(current['chat'])
-                        if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
-                            await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
+                        # Owner 24.11.2026: a ready answer that could not go out by itself is never left silent.
+                        why=self.store.auto_send_block_reason(did,now)
+                        from .auto_panel import record
+                        record(self.store,c['id'],did,'auto_blocked','Этап: отправка AUTO. '+str(why or 'отправка не зарезервирована'))
+                        await self.show_draft(did)
                     return
                 reason=self.store.owner_send_block_reason(did,time.time())
                 if d['admin_mid']:

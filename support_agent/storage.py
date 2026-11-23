@@ -537,7 +537,8 @@ class Store:
         c=self.chat(d['chat'])
         if not c:return 'чат не найден'
         if self.get('mode')!='auto':return 'автоответы не разрешены глобальным режимом'
-        if c['mode']!='auto':return 'автоответы не разрешены в этом чате'
+        # Owner 24.11.2026: «AUTO для всех» keeps chats at 'draft'; the effective mode decides, as everywhere else.
+        if self.effective_mode(d['chat'])!='auto':return 'автоответы не разрешены в этом чате'
         if d['state']!='ready':
             states={'sent':'ответ уже отправлен; автоматический повтор запрещён',
                     'sending':'отправка ответа уже выполняется',
@@ -579,7 +580,7 @@ class Store:
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
             if not d or d['state']!='ready' or not self.still_current(d):return False
             c=self.chat(d['chat'])
-            if self.get('mode')!='auto' or c['mode']!='auto':return False
+            if self.effective_mode(d['chat'])!='auto':return False
             return True
 
     def auto_notice(self,did,kind):
