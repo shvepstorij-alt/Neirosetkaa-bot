@@ -2787,6 +2787,8 @@ async def main():
                 logging.warning('Command menu not updated')
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. '+
+                ('\n⚠️ Автоответы сейчас ВЫКЛЮЧЕНЫ: клиенты получают только черновики. Включить: /auto → «Включить AUTO для всех клиентов».\n'
+                 if auto_for_all and store.get('mode')!='auto' else '')+
                 ('Черновики для всех клиентов: включены, AUTO только для тестовых ID. ' if allowed.drafts_for_all else '')+
                 ('AUTO для всех разрешённых чатов после включения режима.' if auto_for_all else
                  'AUTO доступен тестовой группе после включения в карточке: '+', '.join(str(i) for i in sorted(auto_ids))+'.' if auto_ids else

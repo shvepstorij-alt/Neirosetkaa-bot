@@ -3,13 +3,13 @@ import datetime as dt
 import html
 import json
 
-COMMANDS = [('start', 'Главное меню'), ('draft', 'Включить черновики'), ('pending', 'Черновики, ждущие ответа'), ('stats', 'Статистика по темам'),
+COMMANDS = [('start', 'Главное меню'), ('auto', 'Автоответы: проверить и включить'), ('draft', 'Только черновики (выключить автоответы)'), ('pending', 'Черновики, ждущие ответа'), ('stats', 'Статистика по темам'),
             ('review', 'Файл с исправленными ответами'), ('stop', 'Остановить помощника'), ('help', 'Все команды')]
 
 HELP = ('📖 Команды\n\n'
         '/start — главное меню\n/pending — черновики, ждущие ответа\n/stats 7 — статистика по темам за N дней\n'
         '/review 7 — файл с ответами, которые вы исправили или заменили\n/stop — остановить помощника всем\n'
-        '/draft — режим «только черновики»\n/delay 3 — таймер сбора сообщений, минуты 0–60\n\n'
+        '/auto — автоответы: проверить и включить для всех клиентов\n/draft — только черновики (автоответы выключатся)\n/delay 3 — таймер сбора сообщений, минуты 0–60\n\n'
         'Проверки: /bench — новые случаи эталона, /bench all — полный прогон, /check 1–7, /dialogs 1–4, /shop_status, /catalog_test, /holds.\n\n'
         'Как исправить черновик: нажмите «✏️ Исправить» и пришлите исправленный текст ответом на сообщение. '
         'Помощник отправит клиенту ваш текст.')
@@ -24,7 +24,10 @@ def main_menu(service):
     attention = len(attention_chats(service))
     day = dt.datetime.now(dt.timezone.utc).date().isoformat()
     row = store.db.execute('SELECT calls FROM quota WHERE day=?', (day,)).fetchone()
-    text = (f'🤖 Помощник · режим: {MODE_SHORT.get(store.get("mode"), "неизвестен")}\n'
+    mode = store.get('mode')
+    label = ('🤖 автоответы для всех клиентов' if mode == 'auto' and service.auto_for_all and not service.auto_suspended
+             else MODE_SHORT.get(mode, 'неизвестен'))
+    text = (f'🤖 Помощник · режим: {label}\n'
             f'Ждут ответа: {ready} · Требуют внимания: {attention}\n'
             f'Запросов сегодня: {row[0] if row else 0} из {service.daily_limit}')
     if service.auto_suspended:
@@ -32,6 +35,9 @@ def main_menu(service):
     rows = [[(f'📝 Черновики ({ready})', 'pending:0'), (f'⚠️ Внимание ({attention})', 'attention:0')],
             [('💬 Все чаты', 'chats:0'), ('📈 Статистика', 'menu:stats')],
             [('⚙️ Настройки', 'menu:settings')],
+            # Owner 23.11.2026: AUTO switched off by «Только черновики» was invisible — clients got no answers.
+            *([[('🤖 Включить автоответы для всех', 'auto:settings')]]
+              if service.auto_for_all and mode != 'auto' and not service.auto_suspended else []),
             # Owner 19.11.2026: on pause the main menu shows how to start again.
             [('▶️ Включить черновики', 'global:draft')] if store.get('mode') == 'off' else [('🛑 Остановить всё', 'global:off')]]
     return text, rows

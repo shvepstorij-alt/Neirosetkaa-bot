@@ -7,6 +7,14 @@ from .privacy import scrub
 MODES={'off':'пауза','draft':'только черновики','auto':'автоответы в выбранном тестовом чате'}
 
 
+def mode_label(service, default='неизвестен'):
+    """Owner 23.11.2026: with AUTO for all clients the panel must say so, not «в выбранном тестовом чате»."""
+    mode=service.store.get('mode')
+    if mode=='auto' and service.auto_for_all and not service.auto_suspended:
+        return 'автоответы для всех клиентов ✅'
+    return MODES.get(mode,default)
+
+
 def ensure(store):
     store.db.execute('CREATE TABLE IF NOT EXISTS auto_events(id INTEGER PRIMARY KEY,chat INTEGER,draft INTEGER,state TEXT,reason TEXT,at REAL)')
 
@@ -61,7 +69,7 @@ def overview(service):
     configured=('все разрешённые чаты' if service.auto_for_all else
                 'ID '+', '.join(str(i) for i in sorted(service.auto_test_ids)) if service.auto_test_ids else
                 'не настроена; автоматическая отправка недоступна')
-    text=('🤖 Управление помощником\n\nРежим: '+MODES.get(store.get('mode'),'неизвестен; отправка запрещена')
+    text=('🤖 Управление помощником\n\nРежим: '+mode_label(service,'неизвестен; отправка запрещена')
           +'\nТестовый получатель AUTO: '+configured
           +f'\n\nАвтоответы: {counts["auto"]} чат(ов)\nТолько черновики: {counts["draft"]}\nНа паузе: {counts["off"]}'
           +f'\nТребуют внимания: {len(attention_chats(service))}\nГотовых черновиков: {ready}'
@@ -110,13 +118,15 @@ def settings(service):
     store=service.store
     group=('все разрешённые чаты' if service.auto_for_all else
            ', '.join(str(i) for i in sorted(service.auto_test_ids)) if service.auto_test_ids else 'не настроена')
-    text=('⚙️ Автоответы · тестовый запуск\n\n'
-          'Автоматическая отправка доступна тестовой группе из переменных окружения и только после включения в карточке чата. Отдельный переключатель включает её для всех разрешённых чатов.'
-          '\n\nНеподтверждённый ответ остаётся вам для проверки. Клиент получает короткое уведомление, если Telegram разрешает отправку. Режим не меняется из-за ошибок.'
+    text=(('⚙️ Автоответы\n\nПомощник сам отвечает всем клиентам. Возвраты, блокировки и конфликты остаются вам: черновик и уведомление.'
+           if service.auto_for_all else
+           '⚙️ Автоответы · тестовый запуск\n\n'
+           'Автоматическая отправка доступна тестовой группе из переменных окружения и только после включения в карточке чата. Отдельный переключатель включает её для всех разрешённых чатов.')
+          +'\n\nНеподтверждённый ответ остаётся вам для проверки. Клиент получает короткое уведомление, если Telegram разрешает отправку. Режим не меняется из-за ошибок.'
           '\nРучное сообщение отменяет устаревшую подготовку, но не меняет режим. Остановить помощника можно в меню чата или командой /stop.'
           '\nПереключения не отправляют старые ответы. /stop не отзывает запрос, уже переданный Telegram.'
           '\n\nПолучатели: '+group
-          +'\nТекущий общий режим: '+MODES.get(store.get('mode'),'неизвестен'))
+          +'\nТекущий общий режим: '+mode_label(service))
     rows=[]
     if service.auto_suspended:text+='\nAUTO заблокирован после ошибки сохранения отправки. Сначала проверьте личку и состояние базы; затем перезапустите сервис.'
     if (service.auto_test_ids or service.auto_for_all) and not service.auto_suspended and store.get('mode')!='auto':
