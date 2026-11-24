@@ -21,6 +21,7 @@ _REF = re.compile(
     r'|номер\s+заказа\s*:?\s*#?\s*(\d{3,12})'
     r'|(?:free\s*kassa|фри\s*касс\w*|fk)\s*(?:№|#|номер|id|intid)?\s*:?\s*(\d{5,20})')
 _CONTEXT = re.compile(r'(?i)оплат|оплачен|заплат|актив|подписк|заказ|freekassa|кнопк|не\s+пришл|не\s+работ')
+_PRO_PLAN = re.compile(r'(?i)\bpro\s*(?:5|20|50|100|200)|про\s*(?:5|20|50)')
 AUTO_SERVICES = ('chatgpt', 'gpt', 'claude', 'perplexity')
 REACTIVATION_DONE = ('Заказ #{n} вижу, он оплачен. Окно активации уже закрылось, поэтому я выдал повторную активацию: '
                      'в боте @neirosetkaa_bot пришло новое сообщение с кнопкой «Активировать подписку». Нажмите её — '
@@ -72,6 +73,12 @@ async def decide(service, job, number, context=None, source='text'):
         return _answer(handoff_text(), True, note + '. Заказ не найден или не оплачен — нужен Александр.', number, row, 'not_paid')
     activation = str(row.get('activation_status') or 'not_checked')
     key = _service_key(row)
+    if key.startswith(('chatgpt', 'gpt')) and _PRO_PLAN.search(str(row.get('plan_name') or '')) \
+            and activation not in ('in_progress', 'code_consumed'):
+        # Owner 24.11.2026: Pro 5× and above have no activation button — the client sends the token in one text file.
+        from .paid_notice import TOKEN_STEPS_MANUAL
+        return _answer('Заказ #' + shown + ' вижу, он оплачен. ' + TOKEN_STEPS_MANUAL.format(), False,
+                       note + '. Pro: запрошен токен файлом.', number, row, 'manual', owner_alert=True)
     if activation == 'pending_window':
         return _answer(WINDOW_OPEN.format(n=shown), False, note, number, row, 'window_open')
     if activation in ('in_progress', 'code_consumed'):

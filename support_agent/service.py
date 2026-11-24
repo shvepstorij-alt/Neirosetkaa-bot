@@ -479,6 +479,8 @@ class Service:
             media={'kind':'unsupported'}
         if secret and media.get('kind')!='manual_text_file':
             media={'kind':'sensitive'}
+            if re.search(r'accessToken|sessionToken|"expires"\s*:', str(raw or '')):
+                media['token_text']=True  # owner 24.11.2026: a ChatGPT token pasted as text → ask for one file
         if not secret:
             from .external_quote import public_sites
             sites=public_sites(raw)
@@ -1173,6 +1175,16 @@ class Service:
         return block_reason({'reply':d['text'],'summary':d['summary'],'handoff':bool(d['handoff'])},
                             self.store.evidence(d['id']),current)
 
+    def _repeat_handoff(self,d):
+        """True when the draft is the waiting phrase and the last reply in this chat was the same phrase."""
+        from .handoff import HANDOFF
+        if not str(d['text'] or '').startswith(HANDOFF):
+            return False
+        last=self.store.db.execute(
+            "SELECT role,text FROM messages WHERE chat=? AND role IN ('assistant','owner') ORDER BY at DESC, mid DESC LIMIT 1",
+            (d['chat'],)).fetchone()
+        return bool(last and last['role']=='assistant' and str(last['text'] or '').startswith(HANDOFF))
+
     async def approve(self,did,pause_after=False,automatic=False):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
         if not d:
@@ -1186,6 +1198,11 @@ class Service:
             reason=self.auto_content_reason(d)
             if reason:
                 await self.auto_review(did,reason);return
+            if self._repeat_handoff(d):
+                # Owner 24.11.2026: «Александр ответит…» is never sent twice in a row; the owner still sees the draft.
+                try:await self.show_draft(did)
+                except Exception:logging.warning('Repeat handoff kept as draft')
+                return
         # Recheck current Telegram permissions, then atomically consume draft.
         try:
             if automatic:

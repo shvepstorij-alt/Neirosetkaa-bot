@@ -9,6 +9,8 @@ the shop for this Telegram user, and an order that is not paid goes to Alexander
 import re
 
 _HEAD = re.compile(r'(?i)оплатил\w*\s+заказ\s*(#?\s*[\w-]{1,40})')
+_PAID_BOT = re.compile(r'(?i)оплата\s+прошла')
+_BOT_ORDER = re.compile(r'(?i)номер\s+заказа:?\s*#?\s*(\d{3,12})')
 _FIELD = {
     'service': re.compile(r'(?im)^\s*Сервис:\s*(.{1,80})$'),
     'plan': re.compile(r'(?im)^\s*Тариф:\s*(.{0,80})$'),
@@ -21,6 +23,14 @@ def parse(text):
     value = str(text or '')
     head = _HEAD.search(value)
     service = _FIELD['service'].search(value)
+    if (not head or not service) and _PAID_BOT.search(value):
+        # Owner 24.11.2026: the bot's own «Оплата прошла! / ChatGPT - Pro 5× / Номер заказа: #11633», forwarded.
+        number = _BOT_ORDER.search(value)
+        line = next((ln for ln in value.splitlines() if re.search(r'\s[-–—]\s', ln)), '')
+        line = re.sub(r'^[^A-Za-zА-Яа-яЁё]+', '', line).strip()
+        if number and line:
+            parts = re.split(r'\s+[-–—]\s+', line, maxsplit=1)
+            return {'order': number.group(1), 'service': parts[0], 'plan': parts[1] if len(parts) == 2 else '', 'fk': ''}
     if not head or not service:
         return None
     number = re.sub(r'\D', '', head.group(1)) if '#' in head.group(1) or head.group(1).strip().isdigit() else ''

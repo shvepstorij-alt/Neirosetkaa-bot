@@ -66,6 +66,11 @@ async def prepare_media(service,job):
                     'summary':'Текстовый/JSON-файл оставлен для ручной обработки владельцем; файл не скачивался, содержимое и имя не передавались модели.',
                     'handoff':True,'evidence':{'status':'owner_policy','manual_secret_intake':True,
                         'diagnostic':'Этап: приём файла для ручной обработки. Тип=text/json; загрузка=не выполнялась; модель=не вызывалась. Содержимое и наличие токена не устанавливались.'}}
+            if kind=='sensitive' and media.get('token_text'):
+                return [], {'reply':TOKEN_AS_FILE,
+                            'summary':'Клиент прислал токен текстом в чат; попросили переслать одним текстовым файлом.',
+                            'handoff':False,'evidence':{'status':'owner_policy','owner_approved_wording':True,
+                                'diagnostic':'Этап: приём токена. Токен пришёл текстом, модели не передавался.'}}
             if kind=='sensitive' or media.get('blocked_transcript'):
                 return [], {'reply':'Сообщение получил — Александр посмотрит и ответит здесь при первой возможности.',
                             'summary':'Клиент прислал данные доступа (почта, пароль или токен). Они не переданы модели — откройте личку.',
@@ -155,3 +160,12 @@ async def prepare_media(service,job):
         text=(caption+'\n' if caption else '')+'[Расшифровка голосового; возможны ошибки]\n'+clean
         if not _save_media(service,job,row,media,text):return None,None
     return images,None
+
+
+# Owner 24.11.2026: a token pasted as text is asked again as one text file, with the steps.
+TOKEN_AS_FILE = ('Спасибо! Токен нужно прислать одним текстовым файлом — в сообщениях Telegram он часто обрезается. Как сделать:\n'
+                 '1. На компьютере откройте Блокнот (на Mac — TextEdit в режиме «Простой текст»).\n'
+                 '2. Вставьте туда весь скопированный текст со страницы chatgpt.com/api/auth/session (Ctrl+V).\n'
+                 '3. Сохраните файл, например token.txt.\n'
+                 '4. Отправьте его сюда как файл: скрепка → «Файл».\n'
+                 'Если вы с телефона и не получается создать файл, напишите — Александр подскажет.')

@@ -838,7 +838,7 @@ def _allowed_prices(tariffs, nominals, service_id, tariff_id, extra=()):
     return prices
 
 
-_USD = re.compile(r'\$\s?(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s?(?:\$|долл|usd)', re.I)
+_USD = re.compile(r'\$\s?(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s?(?:\$|долл|usd|бакс|баксов)', re.I)
 
 
 def usd_to_rub(amount):
@@ -2439,13 +2439,19 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
             # When the model itself marks a condition beyond the fact, the question needs the owner.
             # Owner 12.11.2026: a question wider than the rule still gets the rule;
             # the rest goes to Alexander without stopping the reply.
+            answer_text = drop_foreign_service_sentences(answer_text, burst_text + ' ' + str(reply or ''))
             if classify_draft(answer_text, prices)['send']:
                 reply_text = answer_text.rstrip() + ('\n\n' + OWNER_FOLLOWUP if beyond and OWNER_FOLLOWUP not in answer_text else '')
                 # Owner 20.11.2026 (bench): several questions — the owner's text answers one of them,
                 # the model's checked draft keeps the answers to the others.
                 many = (len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
                         or validated.get('situation') == 'compare_choose')
-                if (many and not cont and reply and not answer.get('handoff') and answer_text[:60] not in reply
+                if many and reply and not answer.get('handoff') and covers_same(reply, answer_text) \
+                        and classify_draft(reply, prices)['send'] \
+                        and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply):
+                    # Owner 24.11.2026: the draft already says what the owner's text says — no second copy.
+                    reply_text = reply.rstrip()
+                elif (many and not cont and reply and not answer.get('handoff') and answer_text[:60] not in reply
                         and classify_draft(reply, prices)['send']
                       # a draft that asks for access data is never preferred over the owner's approved text
                       and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply)):
@@ -2576,3 +2582,38 @@ def orders_brief(facts):
                     'state': ORDER_STATE_RU.get(state, state),
                     'state_code': state})
     return {'status': 'available', 'orders': out}
+
+
+
+# Owner 24.11.2026: a reference text must not drag in other services or repeat what the draft already says.
+_SERVICE_NAMES = re.compile(r'(?i)\b(claude|клод\w*|chat\s*gpt|чат\s*гпт|gemini|perplexity|cursor|курсор\w*|grok|midjourney|suno|kling|elevenlabs)\b')
+
+
+def _canon(name):
+    n = name.casefold().replace(' ', '')
+    for key, pat in (('claude', 'клод'), ('chatgpt', 'чатгпт'), ('cursor', 'курсор')):
+        if n.startswith(pat):
+            return key
+    return n
+
+
+def drop_foreign_service_sentences(text, about):
+    """Sentences naming a service the client did not mention are dropped (the rest stays)."""
+    mentioned = {_canon(m.group(1)) for m in _SERVICE_NAMES.finditer(str(about or ''))}
+    if not mentioned:
+        return text
+    parts = re.split(r'(?<=[.!?])\s+', str(text or ''))
+    kept = [p for p in parts if not ({_canon(m.group(1)) for m in _SERVICE_NAMES.finditer(p)} - mentioned)]
+    return ' '.join(kept) if kept else text
+
+
+_WORD = re.compile(r'[а-яёa-z]{6,}', re.I)
+
+
+def covers_same(draft, owner_text):
+    """True when most long words of the owner's text are already in the draft."""
+    owner = {w.casefold()[:7] for w in _WORD.findall(str(owner_text or ''))}
+    if len(owner) < 3:
+        return False
+    have = {w.casefold()[:7] for w in _WORD.findall(str(draft or ''))}
+    return len(owner & have) / len(owner) >= 0.5
