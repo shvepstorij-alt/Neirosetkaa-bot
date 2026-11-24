@@ -130,3 +130,27 @@ class ScreenshotTests(unittest.TestCase):
         import json
         media = json.loads(self.store.db.execute('SELECT media FROM messages WHERE chat=? AND mid=5', (cid,)).fetchone()[0])
         self.assertNotIn('seen', media)
+
+
+class NoticeNotRepeated(unittest.TestCase):
+    """Owner 24.11.2026: «Александр ответит здесь…» is not sent twice in a row."""
+
+    def _draft(self, prior):
+        from support_agent.handoff import handoff_text
+        store = Store(':memory:', batch_seconds=0)
+        store.switch('auto'); store.put('auto_all', '1')
+        store.connection('c1', True, True)
+        now = time.time()
+        cid = store.ingest('c1', 50, 5, 'client', 'а когда?', {}, now - 5)
+        if prior:
+            store.db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)", (cid, 4, 'assistant', handoff_text(), '{}', now - 60, 'stored'))
+        store.prepare_now(cid, now)
+        job = store.claim(now + 1)
+        did = store.finish(job, 'x', '', True)
+        return store, did
+
+    def test_second_notice_is_skipped(self):
+        store, did = self._draft(prior=False)
+        self.assertIsNotNone(store.auto_notice(did, 'handoff'))
+        store, did = self._draft(prior=True)
+        self.assertIsNone(store.auto_notice(did, 'handoff'))
