@@ -491,6 +491,8 @@ def _price_detect(burst, context, answer):
         return False
     if _PAID_FREE.search(burst) or _PAID_ISSUE.search(burst):
         return False
+    if re.search(r'(?i)(?:тратить|потратить|использовать|списать)\w*\s+(?:\w+\s+){0,3}(?:кредит|монет)|монетк|баланс', burst):
+        return False  # night 24.11 (#2274): «как тратить кредиты и монетки» is about the balance, not buying credits
     if _TROUBLE.search(burst):
         return False  # live 6 (#D-60): «оформила Go, но не отражается» is a problem, not a purchase
     priced = bool(_PRICE_Q.search(burst))
@@ -598,7 +600,7 @@ def _yearly_act(answer, burst, context):
 
 
 # --- 18. documents or payment from a company → the owner (owner 21.11.2026) -------------------------------------
-_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|\bооо\b|\bоао\b|\bзао\b|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
+_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|(?-i:\bООО\b|\bОАО\b|\bЗАО\b)|\bооо\s*[«"]|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
                       r'от\s+(?:компании|организации|фирмы)|с\s+р/?с|расч[её]тн\w+\s+сч[её]т|\bупд\b|акт\w*\s+выполненных')
 
 
@@ -768,6 +770,26 @@ def _offcat_act(answer, burst, context):
     return dict(answer, reply=_faq('off_catalog') or answer.get('reply'), handoff=False, evidence=evidence)
 
 
+_CALL_WORDS = re.compile(r'(?i)звон|созвон|позвон|видеосвяз|\bcall\b|зум|zoom|телеграм.?звон')
+_WAIT_OWNER = re.compile(r'(?i)(?:жд[уёе]м?|подожд\w*)\s+(?:\w+\s+){0,2}александр|позов\w*\s+(?:\w+\s+){0,2}(?:александр|человек|создател)|'
+                         r'соедин\w*\s+(?:\w+\s+){0,2}(?:с\s+)?(?:александр|создател|владел)|живого\s+(?:человек|александр)')
+
+
+def _call_detect(burst, context, answer):
+    return str(answer.get('reply') or '').lstrip().startswith('Созвониться, к сожалению') and not _CALL_WORDS.search(burst)
+
+
+def _call_act(answer, burst, context):
+    """Night 24.11 (#2365): «Ждем живого Александра» got «Созвониться не получится». Nobody asked for a call."""
+    evidence = dict(answer.get('evidence') or {})
+    rest = re.sub(r'(?i)созвониться, к сожалению, не получится[^\n]*', '', str(answer.get('reply') or '')).strip()
+    if _WAIT_OWNER.search(burst) or not rest:
+        evidence.update(owner_alert=True, hard_route_auto=True)
+        return dict(answer, reply='Понимаю 🙂 Передал Александру — он ответит здесь при первой возможности.',
+                    evidence=evidence, handoff=False)
+    return dict(answer, reply=rest, evidence=evidence)
+
+
 RULES = (
     ('superseded_owner_line', _superseded_detect, _superseded_act),
     ('claude_blocked_money', _claude_block_detect, _claude_block_act),
@@ -784,6 +806,7 @@ RULES = (
     ('claude_consent', _claude_consent_detect, _claude_consent_act),
     ('reseller', _reseller_detect, _reseller_act),
     ('human_or_bot', _human_detect, _human_act),
+    ('call_not_asked', _call_detect, _call_act),
     ('payment_failure', _payfail_detect, _payfail_act),
     ('chatgpt_business', _business_detect, _business_act),
     ('known_order_number', _order_detect, _order_act),
@@ -799,6 +822,13 @@ RULES = (
 STOP_AFTER = {'claude_blocked_money', 'fkwallet_qr', 'chatgpt_team', 'where_is_my_order', 'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'receipt_no_order', 'linkpay_no_link', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
 
 
+# Owner 24.11.2026 (ElevenLabs: the client forwarded «🎉 Оплата прошла! … Чтобы оформить подписку…» and got the whole
+# catalog + «Как оформить»): a forwarded bot message is not the client asking to buy. Sales rules stay silent then.
+BOT_NOTICE = re.compile(r'(?i)оплата\s+(?:прошла|получена)|заказ\s+передан\s+на\s+проверку|проверка\s+активации|'
+                        r'сохрани\s+номер\s+заказа|📋\s*инструкция|статус:\s*оплачен|🧾\s*заказ\s*#')
+SALES_RULES = {'price_without_price', 'yearly_plan', 'appstore_region_exists', 'off_catalog_generic_guide'}
+
+
 def apply(answer, context):
     """Run every hard rule in order on the final answer; never raises, never returns an empty reply."""
     if not isinstance(answer, dict):
@@ -808,8 +838,11 @@ def apply(answer, context):
         burst = str((context or {}).get('burst') or '')
         fired = []
         current = answer
+        forwarded = bool(BOT_NOTICE.search(burst))
         for name, detect, act in RULES:
             try:
+                if forwarded and name in SALES_RULES:
+                    continue
                 if not detect(burst, context, current):
                     continue
                 result = act(current, burst, context)

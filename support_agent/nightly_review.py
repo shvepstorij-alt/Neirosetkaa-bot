@@ -26,7 +26,8 @@ CATEGORIES = {'none': '—', 'missed_question': 'пропущен вопрос �
               'needless_question': 'лишний вопрос', 'should_handoff': 'нужно было передать Александру',
               'needless_handoff': 'лишняя передача Александру', 'lost_context': 'потерян контекст диалога',
               'too_long': 'слишком длинно', 'too_vague': 'слишком общо', 'tone': 'тон', 'language': 'язык',
-              'screenshot': 'не разобран скриншот', 'other': 'другое'}
+              'screenshot': 'не разобран скриншот', 'no_followup': 'не задан вопрос, ведущий к следующему шагу',
+              'double_greeting': 'повтор приветствия или склеенные шаблоны', 'other': 'другое'}
 
 INSTRUCTIONS = (
     'Ты старший специалист поддержки магазина подписок на нейросети (бот @neirosetkaa_bot, владелец Александр). '
@@ -42,6 +43,9 @@ INSTRUCTIONS = (
     'передать Александру. Если Александр потом написал клиенту — его ответ главный ориентир, как надо было. '
     'Если клиент потом написал «не понял», «не то», переспросил — ответ был слабым. '
     'Цены — только из каталога ниже; цена из каталога — не ошибка.\n'
+    'Хороший ответ владелец описал так: дружелюбно, подробно по шагам и в конце один уточняющий вопрос, который держит клиента '
+    'в диалоге и ведёт к следующему шагу (если следующий шаг зависит от клиента). Повтор приветствия посреди ответа и склеенные '
+    'шаблоны (каталог + «Как оформить» + инструкции, когда клиент уже оплатил) — ошибка double_greeting.\n'
     'problem — одна короткая фраза, что не так (для good пусто). '
     'better_reply — как надо было ответить клиенту, готовым текстом от лица помощника, на «вы», мужской род, '
     'кратко и по шагам; для good пусто. Не обещай сроков и результата, не проси данные для активации до оплаты. '
@@ -85,7 +89,7 @@ def collect(db, since, limit=MAX_ITEMS):
         after = db.execute("SELECT role,text FROM messages WHERE chat=? AND at>? AND at<=? AND role IN ('owner','client') ORDER BY at LIMIT 4",
                            (row['chat'], row['created'], row['created'] + 1800)).fetchall()
         items.append({'id': row['id'], 'chat': row['chat'], 'history': history[-6:], 'client': '\n'.join(client),
-                      'assistant': _clean(text, 1500), 'sent': row['state'] == 'sent',
+                      'assistant': _clean(text, 3800), 'sent': row['state'] == 'sent',
                       'alexander_after': _clean('\n'.join(a['text'] or '' for a in after if a['role'] == 'owner'), 700),
                       'client_after': _clean('\n'.join(a['text'] or '' for a in after if a['role'] == 'client'), 400)})
     # The newest answers first if the day was busy; every client gets at least one reviewed answer.

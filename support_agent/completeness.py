@@ -173,7 +173,8 @@ def complete(answer, context):
                 reply = re.sub(r'\n{3,}', '\n\n', contradicts.sub('', reply)).strip()
             added.append(extra)
             names.append(name)
-    if not added and '₽' in reply and BOT not in reply:
+    from .hard_routes import BOT_NOTICE
+    if not added and '₽' in reply and BOT not in reply and not BOT_NOTICE.search(burst):
         # bench 17: a reply with prices always says where to pay (owner 21.11.2026: «указывать бота»)
         from .turn_understanding import pay_steps
         added.append(pay_steps())

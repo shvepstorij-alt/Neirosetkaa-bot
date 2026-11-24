@@ -50,13 +50,37 @@ def address_mode(text):
     return 'вы'
 
 
+_INNER_GREETING=re.compile(
+    r'^(?:здравствуйте|здравствуй|приветствую|привет|добрый\s+(?:день|вечер)|доброе\s+утро)\s*[!.,)]+\s*',re.I)
+
+
+def single_greeting(reply):
+    """Owner 24.11.2026 (ElevenLabs: «Здравствуйте!… Добрый вечер! Creator вам подходит»): one message greets once.
+
+    When rules put text before the model's own answer, the model's «Добрый вечер!» ended up in the middle.
+    A greeting is kept only at the very start; later paragraphs lose their greeting opening.
+    """
+    parts=re.split(r'(\n\s*\n)',str(reply or ''))
+    seen_text=False
+    for i in range(0,len(parts),2):
+        piece=parts[i]
+        if not piece.strip():continue
+        if seen_text:
+            stripped=_INNER_GREETING.sub('',piece.lstrip(),count=1)
+            if stripped!=piece.lstrip():
+                parts[i]=stripped[:1].upper()+stripped[1:] if stripped else ''
+        seen_text=True
+    text=''.join(parts)
+    return re.sub(r'\n\s*\n(?:\s*\n)+','\n\n',text).strip()
+
+
 def decorate_reply(reply, info=None, introduced=False):
     """First contact gets the agreed introduction once, then the answer itself.
 
     `introduced` is persisted by the store, so a restart does not greet again.
     Later messages are not given a second hello.
     """
-    reply=natural_reply(reply).strip()
+    reply=single_greeting(natural_reply(reply).strip())
     if reply.startswith(INTRO):
         body=reply[len(INTRO):].strip()
     elif reply.startswith(INTRO_PLAIN):
