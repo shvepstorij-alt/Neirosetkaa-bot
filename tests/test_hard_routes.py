@@ -745,3 +745,43 @@ class Bench17Fixes(unittest.TestCase):
         out = self._tidy('джемини про можно на мой гугл акк оформить?',
                          'Да, можем.\n\nОплатить можно в боте @neirosetkaa_bot. После оплаты подскажу, что понадобится для активации.')
         self.assertIn('почту и пароль', out)
+
+
+class ForwardedBotNoticeAndGreeting(unittest.TestCase):
+    """Owner 24.11.2026: ElevenLabs reply greeted twice and stacked the catalog onto a forwarded «Оплата прошла»."""
+
+    def test_forwarded_notice_is_not_a_purchase(self):
+        from support_agent import hard_routes
+        burst = ('Да в принципе прикинул - креатор подойдет\n🎉 Оплата прошла!\n\n📦 ElevenLabs - Creator\n\n'
+                 'Чтобы оформить подписку, получи ссылку на оплату по инструкции и пришли её сюда\nу меня был тариф\nДобрый вечер!')
+        self.assertTrue(hard_routes.BOT_NOTICE.search(burst))
+
+    def test_one_greeting_per_message(self):
+        from support_agent.conversation_style import decorate_reply
+        out = decorate_reply('Есть такие варианты:\n• ElevenLabs Creator - 2290 ₽\n\nДобрый вечер! Creator вам подходит.',
+                             {'current_client_greeting': True}, introduced=False)
+        self.assertEqual(out.count('Добрый вечер'), 0)
+        self.assertIn('\n\nCreator вам подходит.', out)
+        self.assertTrue(out.startswith('Здравствуйте!'))
+
+
+class NightReview24Nov(unittest.TestCase):
+    """Night review 24.11.2026: systemic fixes found in the day's answers."""
+
+    def test_interjection_is_not_a_company(self):
+        from support_agent import hard_routes
+        self.assertIsNone(hard_routes._INVOICE.search('Ооо, круть\nБлагодарю 🙏'))
+        self.assertTrue(hard_routes._INVOICE.search('нужен счёт на ООО'))
+
+    def test_balance_question_is_not_a_price_question(self):
+        from support_agent import hard_routes
+        burst = 'Напиши пожалуйста, как можно тратить кредиты и монетки?'
+        self.assertFalse(hard_routes._price_detect(burst, {'tariffs': []}, {'reply': 'Есть варианты'}))
+
+    def test_call_answer_only_when_call_asked(self):
+        from support_agent import hard_routes
+        answer = {'reply': 'Созвониться, к сожалению, не получится - можем текстом или голосовыми сообщениями.'}
+        self.assertTrue(hard_routes._call_detect('Ждем живого Александра:-)', {}, answer))
+        self.assertFalse(hard_routes._call_detect('а можно созвониться?', {}, answer))
+        out = hard_routes._call_act(answer, 'Ждем живого Александра:-)', {})
+        self.assertIn('Передал Александру', out['reply'])
