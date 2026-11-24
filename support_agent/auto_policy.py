@@ -369,8 +369,8 @@ def owner_gate(answer, evidence=None, current_text=''):
             return _reason(str(meta.get('diagnostic') or meta.get('handoff_reason') or real_stop_reason(answer, meta) or key))
     if answer.get('handoff') is True:
         return _reason(str(meta.get('handoff_reason') or 'ответ передаёт вопрос Александру.'))
-    from .privacy import sensitive
-    if sensitive(reply):
+    from .privacy import reply_leaks_secret
+    if reply_leaks_secret(reply):
         return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
     from .completion_claims import has_completion_claim
     if has_completion_claim(reply):

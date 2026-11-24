@@ -307,3 +307,21 @@ def _has_value(text):
         if re.search(r'[^\w\s.,:;!?()«»"\'—-]', core) and len(core) >= 6:
             return True
     return False
+
+
+_LABELLED_VALUE = re.compile(r'(?i)(?<![\w-])(?:парол\w*|password|логин|login|код|code|токен|token|sessionkey|cookie)(?![\w-])'
+                             r'\s*(?:[:=]|\s[—–-]\s)\s*[^\s,.;…]{4,}')
+_INSTRUCTION_NOISE = re.compile(r'(?i)https?://\S+|\b[\w-]+\.(?:com|ai|ru|io|me|org)/\S*|'
+                                r'\b(?:sk-ant-[\w-]*?|eyJ\w*?)(?:\.{3}|…)|cookie-editor')
+
+
+def reply_leaks_secret(text):
+    """Owner 24.11.2026 (live: «не могу активировать ИИ» got «Александр ответит…»): for the assistant's own reply only
+    a real value counts — a password, code, token or key written out. Instructions that mention a token or a
+    password («скопируйте новый токен», «пришлите почту и пароль после оплаты») are not a leak."""
+    # Links, «начинается на sk-ant-sid02-...» and the Cookie-Editor name are parts of an instruction, not values.
+    text = _INSTRUCTION_NOISE.sub(' ', str(text or ''))
+    # Intake detectors flag the bare word «sessionKey»; a reply is judged by written-out values only.
+    if re.search(r'sk-ant-[\w-]{20,}|eyJ[\w-]{15,}\.[\w-]{10,}|\bsess-[A-Za-z0-9]{20,}|(?<!\d)(?:\d[ -]?){15}\d(?!\d)', text):
+        return True
+    return bool(_LABELLED_VALUE.search(_ORDER_LINES.sub('', _SHOP_CODES.sub('', _PROMO.sub('', text)))))

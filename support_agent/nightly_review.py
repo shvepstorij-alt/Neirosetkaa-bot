@@ -67,6 +67,13 @@ def _clean(text, limit=900):
     return scrub(text)[:limit]
 
 
+def _clean_reply(text, limit=3800):
+    """The assistant's own reply is shown whole; only a written-out secret value is hidden."""
+    from .privacy import reply_leaks_secret, scrub
+    text = str(text or '').strip()
+    return '[скрыто: данные доступа]' if reply_leaks_secret(text) else scrub(text)[:limit]
+
+
 def collect(db, since, limit=MAX_ITEMS):
     from .turn_understanding import with_picture
     rows = db.execute('''SELECT d.id, d.chat, d.mid, d.text, d.state, d.created, e.data FROM drafts d
@@ -89,7 +96,7 @@ def collect(db, since, limit=MAX_ITEMS):
         after = db.execute("SELECT role,text FROM messages WHERE chat=? AND at>? AND at<=? AND role IN ('owner','client') ORDER BY at LIMIT 4",
                            (row['chat'], row['created'], row['created'] + 1800)).fetchall()
         items.append({'id': row['id'], 'chat': row['chat'], 'history': history[-6:], 'client': '\n'.join(client),
-                      'assistant': _clean(text, 3800), 'sent': row['state'] == 'sent',
+                      'assistant': _clean_reply(text, 3800), 'sent': row['state'] == 'sent',
                       'alexander_after': _clean('\n'.join(a['text'] or '' for a in after if a['role'] == 'owner'), 700),
                       'client_after': _clean('\n'.join(a['text'] or '' for a in after if a['role'] == 'client'), 400)})
     # The newest answers first if the day was busy; every client gets at least one reviewed answer.

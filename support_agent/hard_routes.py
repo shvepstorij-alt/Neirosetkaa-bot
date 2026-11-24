@@ -246,11 +246,20 @@ def _paidissue_detect(burst, context, answer):
             and not evidence.get('order_action') and not answer.get('handoff'))
 
 
+PAID_ISSUE_ASK = ('Подскажите, пожалуйста, номер заказа из бота @neirosetkaa_bot и что именно не получается — '
+                  'пришлите скриншот этапа или текста ошибки. По ним подскажу, что делать, а если нужно — Александр проверит заказ.')
+
+
 def _paidissue_act(answer, burst, context):
+    """Owner 24.11.2026 (live: «не могу активировать ИИ» got «Александр ответит…»): «оплатил, не работает» is answered
+    right away — the model's advice plus the clarifying ask (order number, what exactly, a screenshot); Alexander is told.
+    Earlier (21.11) such answers were drafts only and the client waited."""
     evidence = dict(answer.get('evidence') or {})
-    evidence['situation_hold'] = True
-    evidence.setdefault('diagnostic', 'Оплатил, не работает: свой текст модели уходит только черновиком.')
-    return dict(answer, evidence=evidence)
+    evidence.update(owner_alert=True, hard_route_auto=True)
+    reply = str(answer.get('reply') or '').strip()
+    if not re.search(r'(?i)номер\w*\s+заказ|заказ\s*#', reply):
+        reply = (reply + '\n\n' + PAID_ISSUE_ASK).strip()
+    return dict(answer, reply=reply, evidence=evidence, handoff=False)
 
 
 # --- 9. angry / complaint / threat → calm short reply + urgent alert (owner 21.11.2026) ----------------
@@ -770,6 +779,23 @@ def _offcat_act(answer, burst, context):
     return dict(answer, reply=_faq('off_catalog') or answer.get('reply'), handoff=False, evidence=evidence)
 
 
+_COUNTRY_ERROR = re.compile(r'(?i)unsupported[_ ]country|недоступн\w*\s+в\s+(?:вашей|твоей)\s+стран|not\s+available\s+in\s+your\s+country|'
+                            r'(?:country|region),?\s+(?:is\s+)?not\s+supported|стран\w*\s+не\s+поддерживается')
+
+
+def _country_detect(burst, context, answer):
+    reply = str(answer.get('reply') or '')
+    return bool(_COUNTRY_ERROR.search(burst)) and not re.search(r'(?i)другой\s+регион|другой\s+vpn|другую\s+страну', reply)
+
+
+def _country_act(answer, burst, context):
+    """Owner 24.11.2026: «Сервисы OpenAI недоступны в вашей стране» → VPN region, another VPN, another browser."""
+    from .faq import usable_answer
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=usable_answer('unsupported_country'), evidence=evidence, handoff=False)
+
+
 _CALL_WORDS = re.compile(r'(?i)звон|созвон|позвон|видеосвяз|\bcall\b|зум|zoom|телеграм.?звон')
 _WAIT_OWNER = re.compile(r'(?i)(?:жд[уёе]м?|подожд\w*)\s+(?:\w+\s+){0,2}александр|позов\w*\s+(?:\w+\s+){0,2}(?:александр|человек|создател)|'
                          r'соедин\w*\s+(?:\w+\s+){0,2}(?:с\s+)?(?:александр|создател|владел)|живого\s+(?:человек|александр)')
@@ -807,6 +833,7 @@ RULES = (
     ('reseller', _reseller_detect, _reseller_act),
     ('human_or_bot', _human_detect, _human_act),
     ('call_not_asked', _call_detect, _call_act),
+    ('country_error', _country_detect, _country_act),
     ('payment_failure', _payfail_detect, _payfail_act),
     ('chatgpt_business', _business_detect, _business_act),
     ('known_order_number', _order_detect, _order_act),
