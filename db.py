@@ -1013,6 +1013,31 @@ async def init_db():
                 await conn.execute(f"CREATE INDEX IF NOT EXISTS {_ixn} {_ixq}")
             except Exception as _e_ixu:
                 logging.warning(f"индекс {_ixn} не создался: {_e_ixu}")
+        # Помощник поддержки читает заказы только на чтение и только нужные столбцы
+        # (владелец 25.11.2026). Роль задаётся SUPPORT_READER_ROLE; если такой роли нет — пропускаем.
+        _reader = os.getenv("SUPPORT_READER_ROLE", "neiro_support_reader")
+        if re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", _reader or ""):
+            try:
+                _exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname=$1", _reader)
+            except Exception:
+                _exists = None
+            if _exists:
+                for _tbl, _cols in [
+                    ("fk_orders", "num, fk_intid, status, amount_rub, coins_spent, paid_at, last_checked_at, pack, fulfilled_at, order_id, user_id"),
+                    ("gpt_pending_activations", "order_id, user_id, expires_at, activating_at"),
+                    ("gpt_codes", "order_id, used_by, used_at"),
+                    ("claude_pending_activations", "order_id, user_id, expires_at"),
+                    ("claude_codes", "order_id, used_by, used_at"),
+                    ("perplexity_pending_activations", "order_id, user_id, expires_at"),
+                    ("perplexity_codes", "order_id, used_by, used_at"),
+                    ("linkpay_orders", "fk_order_id, user_id, status"),
+                    ("nsgifts_orders", "fk_order_id, user_id, status"),
+                ]:
+                    try:
+                        await conn.execute(f'GRANT SELECT ({_cols}) ON public.{_tbl} TO "{_reader}"')
+                    except Exception as _e_gr:
+                        logging.warning(f"права помощнику на {_tbl} не выданы: {_e_gr}")
+                logging.info(f"✅ права на чтение заказов выданы роли {_reader}")
     logging.info("✅ PostgreSQL инициализирован")
 
 
