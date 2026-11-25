@@ -105,3 +105,23 @@ def owner_card(identity, email, result):
     if result.get('reason'):
         lines.append('<i>' + esc(result['reason']) + '</i>')
     return '\n'.join(lines)
+
+
+_ASKED = re.compile(r'(?i)почт\w*[^.\n]{0,60}(?:курс|регистрир)|бонус')
+_COURSE = re.compile(r'(?i)курс|бонус(?!\w*\s+монет)|\bвип\b|\bvip\b|положен\w*[^.\n]{0,30}(?:подписк|месяц|тариф)|подарочн|бесплатн\w*\s+(?:месяц|подписк)')
+
+
+def course_email_turn(burst, history):
+    """The current message carries an e-mail and the chat is about the course bonus (recent turns)."""
+    if not EMAIL.search(str(burst or '')) and '[email скрыт]' not in str(burst or ''):
+        return False
+    if _COURSE.search(str(burst or '')):
+        return True
+    for message in list(history or [])[-8:]:
+        text = str((message or {}).get('text') or '')
+        role = (message or {}).get('role')
+        if role in ('assistant', 'owner') and _ASKED.search(text):
+            return True
+        if role == 'client' and _COURSE.search(text):
+            return True
+    return False

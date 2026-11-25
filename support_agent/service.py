@@ -1397,6 +1397,30 @@ class Service:
             except Exception:
                 logging.warning('Order action note was not delivered')
 
+    async def _course_email_reply(self, job, context):
+        """Owner 25.11.2026: the client sent an e-mail after we asked for the course e-mail → check the sheets now."""
+        from . import course_sheets
+        burst=str(context.get('burst') or '')
+        email=course_sheets.recall(job['chat'])
+        if not email or not course_sheets.course_email_turn(burst, context.get('history') or []):
+            return None
+        result=await course_sheets.check(email)
+        text={'eligible':course_sheets.ELIGIBLE,'not_eligible':course_sheets.NOT_ELIGIBLE,
+              'not_found':course_sheets.NOT_FOUND}.get(result.get('status'))
+        try:
+            await self.owner_message(course_sheets.owner_card(self.chat_identity(job['chat']),email,result),parse_mode='HTML')
+        except Exception:
+            logging.warning('Course note was not delivered')
+        if not text:
+            from .turn_understanding import COURSE_RECEIVED
+            text=COURSE_RECEIVED
+        return {'reply':text,'summary':'Бонус курса: почта проверена по таблицам — '+str(result.get('status')),
+                'handoff':False,'source_ids':[],
+                'evidence':{'status':'owner_policy','sources':[],'reply_class':'instruct','owner_approved_wording':True,
+                            'owner_text_used':True,'course_sheet':result.get('status'),
+                            'content_review':{'passed':True,'issues':[]},
+                            'diagnostic':'Этап: бонус курса. Почта проверена по таблицам владельца: '+str(result.get('status'))}}
+
     async def _paid_notice_reply(self, job, context):
         """The shop's «Оплатил заказ #N» message: look the order up, then name the next step."""
         from . import paid_notice
@@ -1646,6 +1670,9 @@ class Service:
             if quick:
                 quick.setdefault('evidence',{}).update(reply_class='instruct',owner_approved_wording=True)
                 return tidy(quick, context)
+        course=await self._course_email_reply(job, context)
+        if course is not None:
+            return course
         paid=await self._paid_notice_reply(job, context)
         if paid is not None:
             return paid
@@ -2757,6 +2784,15 @@ class Service:
                     from .voice import masculine
                     from .voice import trim_filler
                     answer['reply']=trim_filler(masculine(answer['reply']))  # owner 12.11.2026: masculine voice, no filler tail
+                    try:
+                        # Owner 25.11.2026: no repeats inside the reply or of what the assistant already said here.
+                        from .repeat_guard import dedupe
+                        earlier=[row['text'] for row in self.store.db.execute(
+                            "SELECT text FROM messages WHERE chat=? AND role='assistant' ORDER BY at DESC, mid DESC LIMIT 4",
+                            (job['chat'],)).fetchall()]
+                        answer['reply']=dedupe(answer['reply'],earlier)
+                    except Exception:
+                        logging.warning('Repeat guard skipped')
                     did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                     if did and not self.store.still_current(job):
                         logging.info('support_turn chat=%s draft discarded: a newer client message arrived', job['chat'])

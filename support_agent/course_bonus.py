@@ -54,7 +54,10 @@ def introduction(text):
     named=named_course(text)
     course=bool(re.search(r'курс|обучени|куратор|\bвип\b|\bvip\b',text))  # «ВИП подписка» = курс (25.11.2026)
     benefit=bool(re.search(r'бонус|подар|бесплат|подписк[а-я]*\s+на\s+месяц|полож[а-я]*[^.!?\n]{0,35}месяц',text))
-    return (named and bool(re.search(r'подписк|бонус|подар|куратор|обучени|курс',text))) or (course and benefit)
+    # Owner 25.11.2026: course clients often skip the course — «как получить бонус», «бонусный тариф», «мне положена подписка».
+    bonus_only=bool(re.search(r'бонус|подарочн\w*\s+(?:подписк|тариф|месяц)|положен\w*[^.!?\n]{0,30}(?:подписк|месяц|тариф)'
+                              r'|бесплатн\w*\s+(?:месяц|подписк)',text)) and not re.search(r'монет|промокод|реферал|розыгрыш|кэшбэк|кешбэк',text)
+    return (named and bool(re.search(r'подписк|бонус|подар|куратор|обучени|курс',text))) or (course and benefit) or bonus_only
 
 
 def context(current,history):
