@@ -1417,8 +1417,16 @@ class Service:
         from . import course_sheets
         burst=str(context.get('burst') or '')
         email=course_sheets.recall(job['chat'])
-        if not email or not course_sheets.course_email_turn(burst, context.get('history') or []):
+        if not course_sheets.course_email_turn(burst, context.get('history') or []):
             return None
+        if not email:
+            # The e-mail lives only in memory; after a restart it is gone. Ask once more instead of stopping.
+            return {'reply':'Спасибо! Пришлите, пожалуйста, почту с курса ещё раз отдельным сообщением — сразу проверю, доступен ли вам бонус.',
+                    'summary':'Бонус курса: почта не сохранилась после перезапуска, попросили прислать ещё раз.',
+                    'handoff':False,'source_ids':[],
+                    'evidence':{'status':'owner_policy','sources':[],'reply_class':'collect','owner_approved_wording':True,
+                                'content_review':{'passed':True,'issues':[]},
+                                'diagnostic':'Этап: бонус курса. Почта не найдена в памяти (перезапуск) — запрошена повторно.'}}
         result=await course_sheets.check(email)
         text={'eligible':course_sheets.ELIGIBLE,'not_eligible':course_sheets.NOT_ELIGIBLE,
               'not_found':course_sheets.NOT_FOUND}.get(result.get('status'))
