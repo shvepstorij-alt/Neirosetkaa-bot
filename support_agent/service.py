@@ -1716,6 +1716,12 @@ class Service:
         if payment is None:
             from . import order_action
             seen=re.sub(r'\D','',str((understanding or {}).get('order_number') or ''))
+            # Owner 25.11.2026: an old order from the history is not today's question («Как обстановка с Клодом?»).
+            # Only a number in this message (or its screenshot) about payment/activation is checked.
+            burst_now=str(context.get('burst') or '')
+            from .order_action import _CONTEXT as _ORDER_TOPIC
+            if seen and not ((seen in re.sub(r'\D',' ',burst_now).split() or images) and _ORDER_TOPIC.search(burst_now+' '+str(images and 'заказ' or ''))):
+                seen=''
             if seen:
                 # Owner 21.11.2026: the number may come from a screenshot — the same order check applies.
                 payment=await order_action.decide(self,job,seen,context,source='model')

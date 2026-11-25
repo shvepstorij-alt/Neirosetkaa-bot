@@ -365,6 +365,8 @@ def owner_gate(answer, evidence=None, current_text=''):
     if not isinstance(meta, dict):
         meta = {}
     for key in _OWNER_HOLDS:
+        if key == 'manual_secret_intake' and _safe_receipt(reply):
+            continue  # owner 25.11.2026: «файл получил» goes out; the file itself stays with the owner
         if meta.get(key):
             return _reason(str(meta.get('diagnostic') or meta.get('handoff_reason') or real_stop_reason(answer, meta) or key))
     if answer.get('handoff') is True and not _safe_receipt(reply):
@@ -391,16 +393,22 @@ def _without_owner_templates(reply):
         from .paid_notice import TOKEN_STEPS_MANUAL, TOKEN_STEPS_AUTO
         from .media_batch import TOKEN_AS_FILE
         from .course_sheets import ELIGIBLE
-        templates = [TOKEN_STEPS_MANUAL.format(), TOKEN_STEPS_AUTO.format(), TOKEN_AS_FILE, ELIGIBLE]
+        templates = [TOKEN_STEPS_MANUAL.format(), TOKEN_STEPS_AUTO.format(), TOKEN_AS_FILE, ELIGIBLE] + _owner_texts()
     except Exception:
         return text
-    norm = lambda v: re.sub(r'\s+', ' ', v).strip()
+    # Compare by words only: the reply is restyled before sending (dashes, bold, quotes), the words stay.
+    norm = lambda v: ' ' + ' '.join(re.findall(r'[0-9a-zа-яё]+', str(v).casefold().replace('ё', 'е'))) + ' '
     flat = norm(text)
     for template in templates:
         for part in re.split(r'\n\s*\n', template):
             part = norm(part)
             if len(part) > 30 and part in flat:
                 flat = flat.replace(part, ' ')
+        # line by line too, so a template split into paragraphs differently still matches
+        for line in template.split('\n'):
+            line = norm(line)
+            if len(line) > 25 and line in flat:
+                flat = flat.replace(line, ' ')
     return flat
 
 
@@ -412,3 +420,36 @@ def _safe_receipt(reply):
     except Exception:
         return False
     return str(reply or '').strip() in set(SAFE_RECEIPTS) | {DATA_RECEIVED}
+
+
+_OWNER_TEXTS = None
+
+
+def _owner_texts():
+    """Every answer the owner wrote himself (faq.yaml, payment_guide.yaml «after»): instructions, not data."""
+    global _OWNER_TEXTS
+    if _OWNER_TEXTS is None:
+        texts = []
+        try:
+            import os, yaml
+            base = os.path.join(os.path.dirname(__file__), 'data')
+            faq = yaml.safe_load(open(os.path.join(base, 'faq.yaml'), encoding='utf-8')) or {}
+            for row in (faq.get('topics') if isinstance(faq, dict) else faq) or []:
+                if isinstance(row, dict) and row.get('answer'):
+                    texts.append(str(row['answer']))
+            guide = yaml.safe_load(open(os.path.join(base, 'payment_guide.yaml'), encoding='utf-8')) or {}
+            def walk(node):
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        if isinstance(value, str) and len(value) > 40:
+                            texts.append(value)
+                        else:
+                            walk(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        walk(value)
+            walk(guide)
+        except Exception:
+            pass
+        _OWNER_TEXTS = texts
+    return _OWNER_TEXTS

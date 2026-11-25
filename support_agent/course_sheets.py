@@ -29,6 +29,14 @@ def recall(chat):
     return ''
 
 
+def _clean(value):
+    """Railway values pasted with spaces, quotes or «Имя = значение» still work."""
+    value = str(value or '').strip().strip('\'"«»').strip()
+    if '=' in value and not value.startswith('http'):
+        value = value.split('=', 1)[1].strip().strip('\'"').strip()
+    return value
+
+
 def configured():
     return bool(os.getenv('COURSE_SHEETS_URL') and os.getenv('COURSE_SHEETS_TOKEN'))
 
@@ -41,9 +49,9 @@ async def check(email):
         return {'status': 'error', 'reason': 'нет почты'}
     try:
         import aiohttp
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
-            async with session.get(os.environ['COURSE_SHEETS_URL'],
-                                   params={'email': email, 'token': os.environ['COURSE_SHEETS_TOKEN']}) as response:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as session:
+            async with session.get(_clean(os.environ['COURSE_SHEETS_URL']),
+                                   params={'email': email, 'token': _clean(os.environ['COURSE_SHEETS_TOKEN'])}) as response:
                 data = json.loads(await response.text())
     except Exception as exc:
         logging.warning('Course sheet check failed: %s', type(exc).__name__)
