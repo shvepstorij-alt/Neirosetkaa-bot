@@ -105,6 +105,7 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
             base=_positive(plan.get('price'))
             row={'service_key':_text(key,100),'plan_index':index,
                  'service':_text(service.get('name',key),160),
+                 'emoji':_text(service.get('emoji'),16),
                  'plan':_text(plan.get('name'),160),
                  'service_description':_text(service.get('desc'),1500),
                  'description':_text(plan.get('desc'),1500),
