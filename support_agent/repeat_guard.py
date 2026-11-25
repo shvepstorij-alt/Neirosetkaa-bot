@@ -84,7 +84,15 @@ def resent_after_data(reply, rows):
         if row['role'] == 'client' and row.get('kind') in ('sensitive', 'manual_text_file'):
             sent_data = True
         if row['role'] == 'assistant' and same_message(reply, row['text']):
-            return DATA_RECEIVED if sent_data else ''
+            if sent_data:
+                return DATA_RECEIVED
+            if 'два варианта Claude Pro' in str(reply):
+                return CLAUDE_PICK  # owner 25.11.2026: the same two options again → just ask which one
+            return ''
         if row['role'] == 'owner':
             return ''
     return ''
+
+
+CLAUDE_PICK = ('Уточните, пожалуйста, какой вариант Claude Pro оформляем: верификацию проходите сами '
+               'или «Claude Pro + прохождение верификации» за 5990 ₽ — её проходим мы. После выбора подскажу, как оплатить.')
