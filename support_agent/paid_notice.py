@@ -6,6 +6,7 @@ password, send the payment link, press the activation button, or wait for the ac
 It never says the payment is confirmed on the client's word: the order is looked up in
 the shop for this Telegram user, and an order that is not paid goes to Alexander.
 """
+import html
 import re
 
 _HEAD = re.compile(r'(?i)оплатил\w*\s+заказ\s*(#?\s*[\w-]{1,40})')
@@ -163,13 +164,37 @@ def compose(found, tariffs):
     return kind, head + '\n\n' + step
 
 
-def owner_note(found, kind, status):
-    wait = 'клиент активирует сам по кнопке в боте' if kind in _SELF else 'нужны ваши действия после ответа клиента'
-    lines = ['🧾 Клиент сообщил об оплате.',
-             'Заказ: ' + ('#' + found['order'] if found.get('order') else 'номер не указан'),
-             'Сервис: ' + found['service'] + (' · ' + found['plan'] if found.get('plan') else '')]
+def service_emoji(name, tariffs):
+    """The catalogue emoji of the service (owner 25.11.2026), or a neutral one."""
+    key = _flat(name)
+    for row in tariffs or []:
+        if key and (key == _flat(row.get('service')) or key == _flat(row.get('service_id'))) and row.get('emoji'):
+            return str(row['emoji'])
+    for row in tariffs or []:
+        if key and row.get('emoji') and (key in _flat(row.get('service')) or _flat(row.get('service')) in key):
+            return str(row['emoji'])
+    return '🛍'
+
+
+_STATUS = {'paid': '✅ оплачен', 'available': '✅ найден', 'not_found': '❓ не найден у этого клиента',
+           'read_error': '⚠️ база магазина не прочиталась', 'не проверен': '— номер не указан',
+           'not_connected': '⚠️ база магазина не подключена'}
+
+
+def owner_note(found, kind, status, diagnostic=''):
+    """Owner 25.11.2026: a card that stands out — service emoji, bold fields, what is needed from him."""
+    wait = ('клиент активирует сам по кнопке в боте' if kind in _SELF
+            else 'ждём токен файлом — потом активируйте вручную' if kind == 'chatgpt_manual'
+            else 'нужны ваши действия после ответа клиента')
+    emoji = found.get('emoji') or '🛍'
+    esc = lambda v: html.escape(str(v or ''), quote=False)
+    lines = ['🧾 <b>ОПЛАТА · ' + esc(emoji) + ' ' + esc(found['service']) + (' · ' + esc(found['plan']) if found.get('plan') else '') + '</b>',
+             '━━━━━━━━━━━━',
+             '📦 Заказ: <b>' + ('#' + found['order'] if found.get('order') else 'номер не указан') + '</b>']
     if found.get('fk'):
-        lines.append('FreeKassa: ' + found['fk'])
-    lines.append('Статус в базе магазина: ' + status)
-    lines.append('Помощник написал следующий шаг; ' + wait + '.')
+        lines.append('💳 FreeKassa: ' + esc(found['fk']))
+    lines.append('🗂 Статус в магазине: ' + _STATUS.get(str(status).casefold(), str(status)))
+    if diagnostic:
+        lines.append('<i>' + esc(str(diagnostic)[:200]) + '</i>')
+    lines.append('👉 Дальше: ' + wait + '.')
     return '\n'.join(lines)

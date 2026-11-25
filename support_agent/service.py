@@ -500,6 +500,9 @@ class Service:
         async with self._business_lock(ident, uid):
             cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
                                   edited='edited_business_message' in update)
+        if role=='client' and cid:
+            from .course_sheets import remember
+            remember(cid,raw)  # owner 25.11.2026: in memory only, for the course-sheet check
             if role=='client':
                 person=m.get('from',{})
                 name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
@@ -1178,12 +1181,14 @@ class Service:
     def _repeat_handoff(self,d):
         """True when the draft is the waiting phrase and the last reply in this chat was the same phrase."""
         from .handoff import HANDOFF
-        if not str(d['text'] or '').startswith(HANDOFF):
-            return False
         last=self.store.db.execute(
             "SELECT role,text FROM messages WHERE chat=? AND role IN ('assistant','owner') ORDER BY at DESC, mid DESC LIMIT 1",
             (d['chat'],)).fetchone()
-        return bool(last and last['role']=='assistant' and str(last['text'] or '').startswith(HANDOFF))
+        if not last or last['role']!='assistant':
+            return False
+        text,prev=' '.join(str(d['text'] or '').split()),' '.join(str(last['text'] or '').split())
+        # Owner 24.11.2026: no reply goes out twice in a row — the waiting phrase or any identical answer.
+        return (text.startswith(HANDOFF) and prev.startswith(HANDOFF)) or (len(text)>20 and text==prev)
 
     async def approve(self,did,pause_after=False,automatic=False):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
@@ -1409,7 +1414,7 @@ class Service:
             if acted is not None:
                 await self._order_action_notice(job,acted)
             return acted
-        status,row='не проверен',None
+        status,row,lookup_diag='не проверен',None,''
         if found.get('order'):
             try:
                 lookup=await self.shop.order_facts(job['uid'],{'untyped':found['order']})
@@ -1419,6 +1424,7 @@ class Service:
             state=str((lookup or {}).get('orders_status') or 'read_error') if isinstance(lookup,dict) else 'read_error'
             row=orders[0] if state=='available' and len(orders)==1 and isinstance(orders[0],dict) else None
             status=str(row.get('status') or 'нет статуса') if row else state
+            lookup_diag=str((lookup or {}).get('orders_diagnostic') or '') if isinstance(lookup,dict) else ''
         if row and str(row.get('activation_status') or '') in ('not_checked','in_progress','code_consumed','fulfilled_recorded','manual_pending') \
                 and str(row.get('status') or '').casefold()=='paid':
             # The window is not open any more: act on the order's real state, not the generic first-time steps.
@@ -1426,14 +1432,15 @@ class Service:
             if acted is not None:
                 await self._order_action_notice(job,acted)
                 return acted
+        found['emoji']=paid_notice.service_emoji(found.get('service'),context.get('tariffs') or [])
         kind,reply=paid_notice.compose(found,context.get('tariffs') or [])
-        note=paid_notice.owner_note(found,kind,status)
+        note=paid_notice.owner_note(found,kind,status,lookup_diag)
         refused=row is not None and str(row.get('status') or '').casefold() not in ('paid','')
         if refused or status=='not_found':
             # The shop does not show this order as paid for this client: Alexander decides.
             from .handoff import handoff_text
             try:
-                await self.owner_message(self.chat_identity(job['chat'])+'\n'+note)
+                await self.owner_message(html.escape(self.chat_identity(job['chat']),quote=False)+'\n'+note,parse_mode='HTML')
             except Exception:
                 logging.warning('Paid-order note was not delivered')
             return {'reply':handoff_text(),'summary':'Клиент сообщил об оплате; заказ в базе не оплачен или не найден.',
@@ -1442,7 +1449,7 @@ class Service:
                                 'handoff_reason':'Заказ не найден или не оплачен в базе магазина. Нужен Александр.'}}
         try:
             if self.store.effective_mode(job['chat'])=='auto':
-                await self.owner_message(self.chat_identity(job['chat'])+'\n'+note)
+                await self.owner_message(html.escape(self.chat_identity(job['chat']),quote=False)+'\n'+note,parse_mode='HTML')
         except Exception:
             logging.warning('Paid-order note was not delivered')
         return {'reply':reply,'summary':'Клиент сообщил об оплате заказа; назван следующий шаг.',
@@ -1905,11 +1912,21 @@ class Service:
     async def maybe_account_setup_alert(self, job, answer):
         evidence=(answer or {}).get('evidence') or {}
         if evidence.get('course_email_hold'):
+            # Owner 25.11.2026: check the e-mail in the course sheets; tick → bonus with the choice, no tick → refusal.
+            from . import course_sheets
+            email=course_sheets.recall(job['chat'])
+            if not email:
+                found=course_sheets.EMAIL.search(str(evidence.get('course_email') or ''))
+                email=found.group(0).casefold() if found else ''
+            result=await course_sheets.check(email) if email else {'status':'error','reason':'почта скрыта в тексте'}
+            text={'eligible':course_sheets.ELIGIBLE,'not_eligible':course_sheets.NOT_ELIGIBLE,
+                  'not_found':course_sheets.NOT_FOUND}.get(result.get('status'))
+            if text and isinstance(answer,dict):
+                answer['reply']=text
+                answer['handoff']=False
+                answer.setdefault('evidence',{}).update(course_sheet=result.get('status'),owner_approved_wording=True)
             try:
-                await self.owner_message('\n'.join([self.chat_identity(job['chat']),
-                    '🎓 Бонус от курса: клиент прислал почту с курса. Клиенту ответили, что вы проверите и ответите.',
-                    ('Почта в переписке с клиентом (помощник её не хранит).' if '[' in str(evidence.get('course_email') or '')
-                     else 'Почта: '+str(evidence.get('course_email') or '')[:200])]))
+                await self.owner_message(course_sheets.owner_card(self.chat_identity(job['chat']),email,result),parse_mode='HTML')
             except Exception:
                 logging.warning('Course note was not delivered')
         if not evidence.get('account_setup_hold'):

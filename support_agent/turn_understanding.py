@@ -582,6 +582,7 @@ def catalog_index(facts, limit=400):
         rows.append({'id': str(row.get('service_key') or '') + '|' + str(row.get('plan') or ''),
                      'service_id': str(row.get('service_key') or ''),
                      'service': str(row.get('service') or ''),
+                     'emoji': str(row.get('emoji') or ''),
                      'plan': str(row.get('plan') or ''),
                      'price': price})
         if len(rows) >= limit:

@@ -38,6 +38,7 @@ def clean_export(data):
             if type(price) is not int or price<=0:raise ValueError('Invalid price')
             item={key:scrub(str(row.get(key,'')))[:limit] for key,limit in
                   (('service_key',100),('service',160),('plan',160),('description',1500),('service_description',1500))}
+            item['emoji']=str(row.get('emoji') or '').strip()[:16]  # owner 25.11.2026: service emoji for cards
             item.update(plan_index=row.get('plan_index'),catalog_price_rub=price,
                         price_scope='public_catalog_before_personal_adjustments',stock='not_checked',fulfillment='not_verified')
             method=row.get('fulfillment')
