@@ -65,7 +65,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     '2) В image_text коротко по-русски опиши увиденное: сервис, экран, тариф или статус, текст ошибки (можно дословно, кратко). '
     'Никогда не переписывай в image_text и в ответ пароли, коды, токены, почты, номера карт и телефонов. '
     '3) Сопоставь с правилами и ответами Александра (owner_topic, переписка выше) и дай конкретные шаги по порядку: '
-    'виден активный платный тариф — порадуйся, что всё получилось; ошибка страны или региона («недоступны в вашей стране», unsupported_country) — это VPN: поставить другой регион в VPN, не помогло — другой VPN-сервис, или войти через другой браузер; '
+    'виден активный платный тариф — порадуйся, что всё получилось; ошибка страны или региона — совет по VPN одной страны; '
     'ошибка оплаты в банке, боте или FreeKassa — новый заказ через /start в @neirosetkaa_bot и оплата по СБП; '
     'после активации виден бесплатный тариф — выйти и зайти снова через 10–15 минут с VPN одной страны, если не помогло — Александр проверит; '
     'чек — номер заказа, если его ещё нет, Александр проверит оплату; экран нашего бота — подскажи, какую кнопку нажать дальше; '
@@ -2092,6 +2092,10 @@ def package(understanding, context, db=None, chat=None):
             validated['tariff_id'] = named_plan[0].get('id') or ''
             kind = kind_for(validated.get('service_id') or '', named_plan[0].get('plan') or '', context.get('tariffs') or [])
     options = [] if validated.get('payment_asked') or composed or cont else matching_tariffs(context, validated.get('service_id'))
+    if options and not _asked_tariff_before(context) and not wants_catalog(validated, context):
+        # Owner 25.11.2026: the tariff list is for a client who is choosing or buying — not for a course bonus,
+        # a free setup, an activation, verification, a phone number or an order already in progress.
+        options = []
     if len(options) >= 2 and _asked_tariff_before(context):
         # The client answered our «X или Y?» — take the option with no extra words, do not ask again.
         picked = _closest_option(options, context.get('burst') or '')
@@ -2603,7 +2607,9 @@ def drop_foreign_service_sentences(text, about):
     if not mentioned:
         return text
     parts = re.split(r'(?<=[.!?])\s+', str(text or ''))
-    kept = [p for p in parts if not ({_canon(m.group(1)) for m in _SERVICE_NAMES.finditer(p)} - mentioned)]
+    # Owner 25.11.2026: only a sentence ABOUT another service goes (it starts with its name);
+    # a list of services («ChatGPT, Claude, Telegram и другие») stays.
+    kept = [p for p in parts if not (_SERVICE_NAMES.match(p.strip()) and _canon(_SERVICE_NAMES.match(p.strip()).group(1)) not in mentioned)]
     return ' '.join(kept) if kept else text
 
 
@@ -2617,3 +2623,19 @@ def covers_same(draft, owner_text):
         return False
     have = {w.casefold()[:7] for w in _WORD.findall(str(draft or ''))}
     return len(owner & have) / len(owner) >= 0.5
+
+
+
+_NOT_BUYING = re.compile(r'(?i)бесплатн|бонус|курс|вип|\bvip\b|установк|актив|верификац|номер\w*\s+телефон|подтверд\w*\s+номер|'
+                         r'заказ\s*#|оплатил|оплатила|токен|не\s+работает|ошибк|продлил')
+_BUYING = re.compile(r'(?i)сколько|цен|стоит|тариф|вариант|купить|оформ|подключ|оплат(?:ить|у)|хочу|нужн\w*\s+подписк|какие')
+
+
+def wants_catalog(validated, context):
+    """True when the client is choosing or buying — then the tariff list helps."""
+    burst = str((context or {}).get('burst') or '')
+    if validated.get('intent') in ('price', 'list_options', 'choose_tariff'):
+        return not _NOT_BUYING.search(burst)
+    if _NOT_BUYING.search(burst) or (context or {}).get('course_bonus'):
+        return False
+    return bool(_BUYING.search(burst))

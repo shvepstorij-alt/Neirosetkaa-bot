@@ -52,7 +52,7 @@ def introduction(text):
     text=str(text).casefold().replace('ё','е')
     if re.search(r'не\s+(?:с|из)\s+(?:курса|обучения)',text):return False
     named=named_course(text)
-    course=bool(re.search(r'курс|обучени|куратор',text))
+    course=bool(re.search(r'курс|обучени|куратор|\bвип\b|\bvip\b',text))  # «ВИП подписка» = курс (25.11.2026)
     benefit=bool(re.search(r'бонус|подар|бесплат|подписк[а-я]*\s+на\s+месяц|полож[а-я]*[^.!?\n]{0,35}месяц',text))
     return (named and bool(re.search(r'подписк|бонус|подар|куратор|обучени|курс',text))) or (course and benefit)
 

@@ -48,6 +48,8 @@ def format_customer(value):
     # label AND URL rather than silently dropping a useful instruction target.
     text=re.sub(r'\[([^\]\n]+)\]\((https?://[^\s)]+)\)',r'\1 (\2)',text)
     text=_referral_names(text)
+    # Owner 25.11.2026: a bullet glued into the middle of a line starts its own line, so options are separated.
+    text=re.sub(r'(?<=[^\s\n])[ \t]+•[ \t]+','\n\n• ',text)
     blocks=[]
     for block in re.split(r'\n\s*\n',text):
         lines=[]
@@ -64,6 +66,10 @@ def format_customer(value):
     rendered=[]
     for line in text.split('\n'):
         formatted=_inline(line)
+        bullet=re.match(r'^(•\s+)([^:\n—–]{2,70}?)(\s+[-—–]\s+|:\s+)(.*)$',formatted)
+        if bullet and '<' not in bullet.group(2):
+            # Owner 25.11.2026: the option or tariff name in a bullet is bold, so long answers are easy to scan.
+            formatted=bullet.group(1)+'<b>'+bullet.group(2)+'</b>'+bullet.group(3)+bullet.group(4)
         # A short standalone heading or complete price line gets restrained
         # emphasis. Account emails, URLs and long prose are never guessed at.
         if ('<' not in formatted and len(line)<=100 and
