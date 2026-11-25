@@ -62,7 +62,7 @@ async def prepare_media(service,job):
             kind=media.get('kind','none')
             if kind=='none':continue
             if kind=='manual_text_file':
-                return [], {'reply':'Файл получен. Для него нужна моя ручная проверка в этой переписке. Повторно отправлять его содержимое текстом не нужно.',
+                return [], {'reply':'Файл получил, спасибо! Александр обработает его при первой возможности и напишет здесь. Повторно ничего отправлять не нужно.',
                     'summary':'Текстовый/JSON-файл оставлен для ручной обработки владельцем; файл не скачивался, содержимое и имя не передавались модели.',
                     'handoff':True,'evidence':{'status':'owner_policy','manual_secret_intake':True,
                         'diagnostic':'Этап: приём файла для ручной обработки. Тип=text/json; загрузка=не выполнялась; модель=не вызывалась. Содержимое и наличие токена не устанавливались.'}}
@@ -72,7 +72,7 @@ async def prepare_media(service,job):
                             'handoff':False,'evidence':{'status':'owner_policy','owner_approved_wording':True,
                                 'diagnostic':'Этап: приём токена. Токен пришёл текстом, модели не передавался.'}}
             if kind=='sensitive' or media.get('blocked_transcript'):
-                return [], {'reply':'Сообщение получил — Александр посмотрит и ответит здесь при первой возможности.',
+                return [], {'reply':'Данные получил, спасибо! Александр обработает их при первой возможности и напишет здесь. Повторно ничего отправлять не нужно.',
                             'summary':'Клиент прислал данные доступа (почта, пароль или токен). Они не переданы модели — откройте личку.',
                             'handoff':True}
             if kind=='document':
@@ -160,6 +160,9 @@ async def prepare_media(service,job):
         text=(caption+'\n' if caption else '')+'[Расшифровка голосового; возможны ошибки]\n'+clean
         if not _save_media(service,job,row,media,text):return None,None
     return images,None
+
+
+SAFE_RECEIPTS = ('Файл получил, спасибо! Александр обработает его при первой возможности и напишет здесь. Повторно ничего отправлять не нужно.', 'Данные получил, спасибо! Александр обработает их при первой возможности и напишет здесь. Повторно ничего отправлять не нужно.')
 
 
 # Owner 24.11.2026: a token pasted as text is asked again as one text file, with the steps.

@@ -699,7 +699,9 @@ def build_context(db, chat, facts, now=None):
             'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
             'service_guide': _service_guide(burst, state.get('service_key') or ''),
-            'usd_to_rub': _usd_context(burst, state.get('service_key') or ''),
+            # Owner 25.11.2026: a $ price the client named a few messages earlier still counts («Pro за 20 баксов» → «давайте»).
+            'usd_to_rub': _usd_context(burst + '\n' + '\n'.join(str(m.get('text') or '') for m in window[-10:]
+                                                              if m.get('role') == 'client'), state.get('service_key') or ''),
             'bot_generation': _bot_generation(facts, burst),
             'hints': hint_services(burst, catalog)}
     # Owner 21.11.2026: the dialog as text comes first in the model input; JSON fields above stay for code.
@@ -2508,6 +2510,8 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
         evidence['continue_step'] = True
     if course_email:
         evidence.update(course_email_hold=True, course_email=course_email)
+    if topic == 'shared_appstore_login' and owner_text_used:
+        owner_followup = True  # owner 25.11.2026: Alexander sends the code or fresh App Store details himself
     if owner_followup and not holds:
         evidence.update(owner_followup=True, owner_followup_topic=topic)
     if composed_card(answer):

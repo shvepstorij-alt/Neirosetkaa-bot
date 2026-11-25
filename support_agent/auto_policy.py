@@ -367,10 +367,10 @@ def owner_gate(answer, evidence=None, current_text=''):
     for key in _OWNER_HOLDS:
         if meta.get(key):
             return _reason(str(meta.get('diagnostic') or meta.get('handoff_reason') or real_stop_reason(answer, meta) or key))
-    if answer.get('handoff') is True:
+    if answer.get('handoff') is True and not _safe_receipt(reply):
         return _reason(str(meta.get('handoff_reason') or 'ответ передаёт вопрос Александру.'))
-    from .privacy import reply_leaks_secret
-    if reply_leaks_secret(reply):
+    from .privacy import sensitive
+    if sensitive(_without_owner_templates(reply)):
         return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
     from .completion_claims import has_completion_claim
     if has_completion_claim(reply):
@@ -379,3 +379,36 @@ def owner_gate(answer, evidence=None, current_text=''):
     if grants_unverified_benefit(reply):
         return _reason('ответ подтверждает выдачу бонуса или льготы; это решает Александр.')
     return None
+
+
+
+def _without_owner_templates(reply):
+    """Owner 25.11.2026: the owner's own step-by-step texts (how to get a token, send it as a file, the course
+    bonus choice) name the token page — they are instructions, not access data. Only they are removed before the
+    access-data check; anything else in the reply is still checked."""
+    text = str(reply or '')
+    try:
+        from .paid_notice import TOKEN_STEPS_MANUAL, TOKEN_STEPS_AUTO
+        from .media_batch import TOKEN_AS_FILE
+        from .course_sheets import ELIGIBLE
+        templates = [TOKEN_STEPS_MANUAL.format(), TOKEN_STEPS_AUTO.format(), TOKEN_AS_FILE, ELIGIBLE]
+    except Exception:
+        return text
+    norm = lambda v: re.sub(r'\s+', ' ', v).strip()
+    flat = norm(text)
+    for template in templates:
+        for part in re.split(r'\n\s*\n', template):
+            part = norm(part)
+            if len(part) > 30 and part in flat:
+                flat = flat.replace(part, ' ')
+    return flat
+
+
+def _safe_receipt(reply):
+    """Owner 25.11.2026: «данные/файл получил, Александр обработает» goes out by itself; the owner is still alerted."""
+    try:
+        from .media_batch import SAFE_RECEIPTS
+        from .repeat_guard import DATA_RECEIVED
+    except Exception:
+        return False
+    return str(reply or '').strip() in set(SAFE_RECEIPTS) | {DATA_RECEIVED}

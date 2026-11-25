@@ -64,3 +64,27 @@ def dedupe(reply, earlier=()):
     if not dropped or len(result) < 40:
         return text
     return result
+
+
+DATA_RECEIVED = ('Данные получил, спасибо! Александр активирует при первой возможности и напишет здесь. '
+                 'Повторно ничего отправлять не нужно.')
+
+
+def same_message(a, b):
+    """True when two replies say practically the same (a resent instruction)."""
+    ka, kb = _key(str(a or '')), _key(str(b or ''))
+    return len(ka) >= 8 and len(kb) >= 8 and len(ka & kb) / len(ka | kb) >= 0.8
+
+
+def resent_after_data(reply, rows):
+    """rows: recent messages, newest first, dicts with role/text/media kind.
+    The reply repeats an earlier instruction, and the client has already sent data after it → short status."""
+    sent_data = False
+    for row in rows:
+        if row['role'] == 'client' and row.get('kind') in ('sensitive', 'manual_text_file'):
+            sent_data = True
+        if row['role'] == 'assistant' and same_message(reply, row['text']):
+            return DATA_RECEIVED if sent_data else ''
+        if row['role'] == 'owner':
+            return ''
+    return ''

@@ -458,6 +458,13 @@ class Service:
         role='owner' if sender==self.owner else 'client'
         raw=m.get('text') or m.get('caption') or ''
         secret=sensitive(raw)
+        if secret and role=='client':
+            # Owner 25.11.2026: an e-mail on its own (course e-mail, account e-mail) is not a secret —
+            # the text keeps «[email скрыт]», the answer goes on. A password or code next to it still is.
+            from .course_sheets import EMAIL
+            rest=EMAIL.sub('',raw)
+            if EMAIL.search(raw) and len(rest.strip())<120 and not sensitive(rest):
+                secret=False
         media={'kind':'none'}
         if m.get('photo'):
             media=dict(m['photo'][-1],kind='photo')
@@ -1169,6 +1176,14 @@ class Service:
             try:kind=json.loads(row['media'] or '{}').get('kind')
             except (ValueError,TypeError):kind='unsupported'
             if kind in ('sensitive','manual_text_file','unsupported'):
+                # Owner 25.11.2026: fixed safe receipts («данные получил», «пришлите токен файлом») go out by themselves;
+                # the data itself never reaches the model and the owner still sees it in the chat.
+                from .repeat_guard import DATA_RECEIVED
+                from .media_batch import TOKEN_AS_FILE
+                from .media_batch import SAFE_RECEIPTS
+                safe={DATA_RECEIVED,TOKEN_AS_FILE,*SAFE_RECEIPTS}
+                if kind!='unsupported' and str(d['text'] or '').strip() in safe:
+                    continue
                 return 'Этап: допуск AUTO. Во входящем обращении есть вложение или данные для ручного разбора; автоматическая отправка запрещена.'
         if self.auto_for_all:
             # Owner 24.11.2026: AUTO for all clients uses the owner's gate (real hand-over and safety rules only).
@@ -2791,6 +2806,18 @@ class Service:
                             "SELECT text FROM messages WHERE chat=? AND role='assistant' ORDER BY at DESC, mid DESC LIMIT 4",
                             (job['chat'],)).fetchall()]
                         answer['reply']=dedupe(answer['reply'],earlier)
+                        from .repeat_guard import resent_after_data
+                        recent=[]
+                        for row in self.store.db.execute(
+                                "SELECT role,text,media FROM messages WHERE chat=? ORDER BY at DESC, mid DESC LIMIT 12",(job['chat'],)).fetchall():
+                            try:kind=json.loads(row['media'] or '{}').get('kind')
+                            except (ValueError,TypeError,AttributeError):kind=None
+                            recent.append({'role':row['role'],'text':row['text'] or '','kind':kind})
+                        status=resent_after_data(answer['reply'],recent)
+                        if status:
+                            # Owner 25.11.2026: the client already sent what the instruction asked for — no resend.
+                            answer['reply']=status
+                            answer['handoff']=False
                     except Exception:
                         logging.warning('Repeat guard skipped')
                     did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
