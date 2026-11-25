@@ -81,13 +81,15 @@ async def decide(service, job, number, context=None, source='text'):
                        note + '. Pro: запрошен токен файлом.', number, row, 'manual', owner_alert=True)
     if activation == 'pending_window':
         return _answer(WINDOW_OPEN.format(n=shown), False, note, number, row, 'window_open')
-    if activation in ('in_progress', 'code_consumed'):
+    if activation == 'code_consumed':
         return _answer(ALREADY_ACTIVATED.format(n=shown), False, note, number, row, 'already_activated')
+    # Owner 25.11.2026: «in_progress» = the activation was started but not confirmed (mini-app did not open,
+    # client gave up). Treat it as not activated: ask the shop for a repeat activation; the shop refuses if it went through.
     if activation == 'manual_pending':
         return _answer(MANUAL.format(n=shown), False, note, number, row, 'manual')
     # «fulfilled_recorded» is set as soon as the shop SENDS the button, so an expired, never-used order looks
     # like that too. The shop re-checks the exact signals (code used, done mark, activation started) and decides.
-    if activation in ('not_checked', 'fulfilled_recorded') and any(key.startswith(s) for s in AUTO_SERVICES):
+    if activation in ('not_checked', 'fulfilled_recorded', 'in_progress') and any(key.startswith(s) for s in AUTO_SERVICES):
         result = {'ok': False, 'error': 'not_connected', 'msg': ''}
         resend = getattr(service.shop, 'resend_activation', None)
         if resend:

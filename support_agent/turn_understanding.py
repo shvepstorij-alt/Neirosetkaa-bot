@@ -2453,7 +2453,10 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 # the model's checked draft keeps the answers to the others.
                 many = (len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
                         or validated.get('situation') == 'compare_choose')
-                if many and reply and not answer.get('handoff') and covers_same(reply, answer_text) \
+                if many and reply and not answer.get('handoff') and not relevant_to(answer_text, burst_text):
+                    # Owner 25.11.2026: a reference text on another subject (gift cards after a Grok question) is not appended.
+                    reply_text = reply.rstrip()
+                elif many and reply and not answer.get('handoff') and covers_same(reply, answer_text) \
                         and classify_draft(reply, prices)['send'] \
                         and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply):
                     # Owner 24.11.2026: the draft already says what the owner's text says — no second copy.
@@ -2510,7 +2513,7 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
         evidence['continue_step'] = True
     if course_email:
         evidence.update(course_email_hold=True, course_email=course_email)
-    if topic == 'shared_appstore_login' and owner_text_used:
+    if topic in ('shared_appstore_login', 'shared_appstore_code', 'want_human', 'order_under_review_forwarded') and owner_text_used:
         owner_followup = True  # owner 25.11.2026: Alexander sends the code or fresh App Store details himself
     if owner_followup and not holds:
         evidence.update(owner_followup=True, owner_followup_topic=topic)
@@ -2644,3 +2647,11 @@ def wants_catalog(validated, context):
     if _NOT_BUYING.search(burst) or (context or {}).get('course_bonus'):
         return False
     return bool(_BUYING.search(burst))
+
+
+
+def relevant_to(owner_text, burst):
+    """At least two long words of the owner's text occur in the client's message."""
+    owner = {w.casefold()[:6] for w in _WORD.findall(str(owner_text or ''))}
+    client = {w.casefold()[:6] for w in _WORD.findall(str(burst or ''))}
+    return len(owner & client) >= 2

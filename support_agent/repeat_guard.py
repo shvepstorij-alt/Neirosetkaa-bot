@@ -38,7 +38,8 @@ def dedupe(reply, earlier=()):
             parts = []
             for sentence in _SPLIT.split(line):
                 key = _key(sentence)
-                if any(_same(key, k) for k in mine) or any(_same(key, k) for k in seen):
+                # The first paragraph is the direct answer: only exact repeats inside the reply go, never «already said earlier».
+                if any(_same(key, k) for k in mine) or (out_paragraphs and any(_same(key, k) for k in seen)):
                     dropped += 1
                     continue
                 mine.append(key)

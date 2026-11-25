@@ -246,20 +246,11 @@ def _paidissue_detect(burst, context, answer):
             and not evidence.get('order_action') and not answer.get('handoff'))
 
 
-PAID_ISSUE_ASK = ('Подскажите, пожалуйста, номер заказа из бота @neirosetkaa_bot и что именно не получается — '
-                  'пришлите скриншот этапа или текста ошибки. По ним подскажу, что делать, а если нужно — Александр проверит заказ.')
-
-
 def _paidissue_act(answer, burst, context):
-    """Owner 24.11.2026 (live: «не могу активировать ИИ» got «Александр ответит…»): «оплатил, не работает» is answered
-    right away — the model's advice plus the clarifying ask (order number, what exactly, a screenshot); Alexander is told.
-    Earlier (21.11) such answers were drafts only and the client waited."""
     evidence = dict(answer.get('evidence') or {})
-    evidence.update(owner_alert=True, hard_route_auto=True)
-    reply = str(answer.get('reply') or '').strip()
-    if not re.search(r'(?i)номер\w*\s+заказ|заказ\s*#', reply):
-        reply = (reply + '\n\n' + PAID_ISSUE_ASK).strip()
-    return dict(answer, reply=reply, evidence=evidence, handoff=False)
+    evidence['situation_hold'] = True
+    evidence.setdefault('diagnostic', 'Оплатил, не работает: свой текст модели уходит только черновиком.')
+    return dict(answer, evidence=evidence)
 
 
 # --- 9. angry / complaint / threat → calm short reply + urgent alert (owner 21.11.2026) ----------------
@@ -336,18 +327,55 @@ _AGREE = re.compile(r'(?i)^\W*(?:да\b|согла\w*|ок\b|окей|хорош
 CLAUDE_EMAIL_ASK = 'Спасибо! Пришлите, пожалуйста, почту вашего аккаунта Claude — дальше Александр продолжит оформление.'
 
 
+_SELF_KYC = re.compile(r'(?i)(?:сам\w*\s+(?:и\s+)?пройд\w*|пройд\w*\s+(?:\w+\s+)?сам\w*|сам\w*\s+(?:буду\s+)?проход\w*|'
+                       r'верификаци\w*\s+сам\w*|по\s+(?:своим|казахстанск\w*|загран\w*)\s+(?:документ|паспорт)\w*)')
+_RISK_TALK = re.compile(r'(?i)согласн\w*\s+с\s+(?:этими\s+)?риск|верификаци')
+
+
 def _claude_consent_detect(burst, context, answer):
+    """Owner 21.11 + 26.11.2026: «да/согласен» or «сам пройду верификацию» after our Claude risks = consent."""
     history = [m for m in (context or {}).get('history') or () if isinstance(m, dict)]
     last_ours = next((str(m.get('text') or '') for m in reversed(history)
                       if m.get('role') in ('assistant', 'owner')), '')
-    return 'согласны с этими рисками' in last_ours and bool(_AGREE.search(burst)) \
-        and bool(re.search(r'(?i)\b(?:max|ultra|макс|ультра)\b', last_ours))
+    if not re.search(r'(?i)claude|клод', last_ours) or not _RISK_TALK.search(last_ours):
+        return False
+    return bool(_AGREE.search(burst) or _SELF_KYC.search(burst))
+
+
+def _claude_session_steps():
+    try:
+        from .turn_understanding import _faq_answer
+        text = _faq_answer('claude_activation') or ''
+    except Exception:
+        text = ''
+    part = text[text.find('sessionKey'):] if 'sessionKey' in text else ''
+    return part
 
 
 def _claude_consent_act(answer, burst, context):
     evidence = dict(answer.get('evidence') or {})
     evidence.update(owner_alert=True, owner_text_used=True, hard_route_auto=True)
-    return dict(answer, reply=CLAUDE_EMAIL_ASK, handoff=False, evidence=evidence)
+    history = [m for m in (context or {}).get('history') or () if isinstance(m, dict)]
+    last_ours = next((str(m.get('text') or '') for m in reversed(history)
+                      if m.get('role') in ('assistant', 'owner')), '')
+    if re.search(r'(?i)\b(?:max|ultra|макс|ультра)\b', last_ours):
+        return dict(answer, reply=CLAUDE_EMAIL_ASK, handoff=False, evidence=evidence)
+    orders = ((context or {}).get('client_orders') or {}).get('orders') or []
+    paid_claude = any(o.get('paid') and re.search(r'(?i)claude', str(o.get('service') or '')) and
+                      o.get('state_code') not in ('code_consumed',) for o in orders[:3])
+    if not paid_claude:
+        # Not paid yet: the next step is the purchase.
+        reply = ('Понял вас 👍 Тогда следующий шаг — оформить заказ:\n'
+                 '1. Откройте бота @neirosetkaa_bot и нажмите «Каталог».\n'
+                 '2. Выберите Claude → Claude Pro.\n'
+                 '3. Оплатите по СБП (без комиссии) или картой «Мир».\n'
+                 '4. После оплаты напишите сюда — подскажу, что прислать для активации.')
+        return dict(answer, reply=reply, handoff=False, evidence=evidence)
+    steps = _claude_session_steps()
+    if not steps:
+        return dict(answer, reply=CLAUDE_EMAIL_ASK, handoff=False, evidence=evidence)
+    reply = 'Понял вас 👍 Следующий шаг — нужен ' + steps
+    return dict(answer, reply=reply, handoff=False, evidence=evidence)
 
 
 # --- 13. paid the wrong plan/service → order number and the needed plan, the owner decides (21.11.2026) --
@@ -500,8 +528,6 @@ def _price_detect(burst, context, answer):
         return False
     if _PAID_FREE.search(burst) or _PAID_ISSUE.search(burst):
         return False
-    if re.search(r'(?i)(?:тратить|потратить|использовать|списать)\w*\s+(?:\w+\s+){0,3}(?:кредит|монет)|монетк|баланс', burst):
-        return False  # night 24.11 (#2274): «как тратить кредиты и монетки» is about the balance, not buying credits
     if _TROUBLE.search(burst):
         return False  # live 6 (#D-60): «оформила Go, но не отражается» is a problem, not a purchase
     priced = bool(_PRICE_Q.search(burst))
@@ -609,7 +635,7 @@ def _yearly_act(answer, burst, context):
 
 
 # --- 18. documents or payment from a company → the owner (owner 21.11.2026) -------------------------------------
-_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|(?-i:\bООО\b|\bОАО\b|\bЗАО\b)|\bооо\s*[«"]|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
+_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|\bооо\b|\bоао\b|\bзао\b|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
                       r'от\s+(?:компании|организации|фирмы)|с\s+р/?с|расч[её]тн\w+\s+сч[её]т|\bупд\b|акт\w*\s+выполненных')
 
 
@@ -779,43 +805,6 @@ def _offcat_act(answer, burst, context):
     return dict(answer, reply=_faq('off_catalog') or answer.get('reply'), handoff=False, evidence=evidence)
 
 
-_COUNTRY_ERROR = re.compile(r'(?i)unsupported[_ ]country|недоступн\w*\s+в\s+(?:вашей|твоей)\s+стран|not\s+available\s+in\s+your\s+country|'
-                            r'(?:country|region),?\s+(?:is\s+)?not\s+supported|стран\w*\s+не\s+поддерживается')
-
-
-def _country_detect(burst, context, answer):
-    reply = str(answer.get('reply') or '')
-    return bool(_COUNTRY_ERROR.search(burst)) and not re.search(r'(?i)другой\s+регион|другой\s+vpn|другую\s+страну', reply)
-
-
-def _country_act(answer, burst, context):
-    """Owner 24.11.2026: «Сервисы OpenAI недоступны в вашей стране» → VPN region, another VPN, another browser."""
-    from .faq import usable_answer
-    evidence = dict(answer.get('evidence') or {})
-    evidence.update(owner_text_used=True, hard_route_auto=True)
-    return dict(answer, reply=usable_answer('unsupported_country'), evidence=evidence, handoff=False)
-
-
-_CALL_WORDS = re.compile(r'(?i)звон|созвон|позвон|видеосвяз|\bcall\b|зум|zoom|телеграм.?звон')
-_WAIT_OWNER = re.compile(r'(?i)(?:жд[уёе]м?|подожд\w*)\s+(?:\w+\s+){0,2}александр|позов\w*\s+(?:\w+\s+){0,2}(?:александр|человек|создател)|'
-                         r'соедин\w*\s+(?:\w+\s+){0,2}(?:с\s+)?(?:александр|создател|владел)|живого\s+(?:человек|александр)')
-
-
-def _call_detect(burst, context, answer):
-    return str(answer.get('reply') or '').lstrip().startswith('Созвониться, к сожалению') and not _CALL_WORDS.search(burst)
-
-
-def _call_act(answer, burst, context):
-    """Night 24.11 (#2365): «Ждем живого Александра» got «Созвониться не получится». Nobody asked for a call."""
-    evidence = dict(answer.get('evidence') or {})
-    rest = re.sub(r'(?i)созвониться, к сожалению, не получится[^\n]*', '', str(answer.get('reply') or '')).strip()
-    if _WAIT_OWNER.search(burst) or not rest:
-        evidence.update(owner_alert=True, hard_route_auto=True)
-        return dict(answer, reply='Понимаю 🙂 Передал Александру — он ответит здесь при первой возможности.',
-                    evidence=evidence, handoff=False)
-    return dict(answer, reply=rest, evidence=evidence)
-
-
 RULES = (
     ('superseded_owner_line', _superseded_detect, _superseded_act),
     ('claude_blocked_money', _claude_block_detect, _claude_block_act),
@@ -832,8 +821,6 @@ RULES = (
     ('claude_consent', _claude_consent_detect, _claude_consent_act),
     ('reseller', _reseller_detect, _reseller_act),
     ('human_or_bot', _human_detect, _human_act),
-    ('call_not_asked', _call_detect, _call_act),
-    ('country_error', _country_detect, _country_act),
     ('payment_failure', _payfail_detect, _payfail_act),
     ('chatgpt_business', _business_detect, _business_act),
     ('known_order_number', _order_detect, _order_act),
@@ -849,13 +836,6 @@ RULES = (
 STOP_AFTER = {'claude_blocked_money', 'fkwallet_qr', 'chatgpt_team', 'where_is_my_order', 'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'receipt_no_order', 'linkpay_no_link', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
 
 
-# Owner 24.11.2026 (ElevenLabs: the client forwarded «🎉 Оплата прошла! … Чтобы оформить подписку…» and got the whole
-# catalog + «Как оформить»): a forwarded bot message is not the client asking to buy. Sales rules stay silent then.
-BOT_NOTICE = re.compile(r'(?i)оплата\s+(?:прошла|получена)|заказ\s+передан\s+на\s+проверку|проверка\s+активации|'
-                        r'сохрани\s+номер\s+заказа|📋\s*инструкция|статус:\s*оплачен|🧾\s*заказ\s*#')
-SALES_RULES = {'price_without_price', 'yearly_plan', 'appstore_region_exists', 'off_catalog_generic_guide'}
-
-
 def apply(answer, context):
     """Run every hard rule in order on the final answer; never raises, never returns an empty reply."""
     if not isinstance(answer, dict):
@@ -865,11 +845,8 @@ def apply(answer, context):
         burst = str((context or {}).get('burst') or '')
         fired = []
         current = answer
-        forwarded = bool(BOT_NOTICE.search(burst))
         for name, detect, act in RULES:
             try:
-                if forwarded and name in SALES_RULES:
-                    continue
                 if not detect(burst, context, current):
                     continue
                 result = act(current, burst, context)

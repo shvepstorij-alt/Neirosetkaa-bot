@@ -1716,11 +1716,28 @@ class Service:
         if payment is None:
             from . import order_action
             seen=re.sub(r'\D','',str((understanding or {}).get('order_number') or ''))
+            if not seen:
+                # Owner 25.11.2026: no number given, but the client has exactly one paid order with no activation
+                # and talks about activation / a problem → that order.
+                def _recent(o):
+                    try:return (dt.datetime.now()-dt.datetime.fromisoformat(str(o.get('paid_at'))[:16])).days<=7
+                    except Exception:return False
+                fresh=[o for o in ((context.get('client_orders') or {}).get('orders') or [])
+                       if o.get('paid') and _recent(o) and o.get('state_code') in ('not_checked','fulfilled_recorded','pending_window')]
+                if len(fresh)==1:
+                    seen=str(fresh[0].get('order') or '').lstrip('#')
             # Owner 25.11.2026: an old order from the history is not today's question («Как обстановка с Клодом?»).
             # Only a number in this message (or its screenshot) about payment/activation is checked.
             burst_now=str(context.get('burst') or '')
             from .order_action import _CONTEXT as _ORDER_TOPIC
-            if seen and not ((seen in re.sub(r'\D',' ',burst_now).split() or images) and _ORDER_TOPIC.search(burst_now+' '+str(images and 'заказ' or ''))):
+            recent_client=' '.join(str(m.get('text') or '') for m in (context.get('history') or [])[-6:] if m.get('role')=='client')
+            own=[o for o in ((context.get('client_orders') or {}).get('orders') or [])
+                 if str(o.get('order') or '').lstrip('#')==seen]
+            # Owner 25.11.2026: the client's own fresh paid order with no activation yet → act on it (repeat activation),
+            # even when the number is not in this message — «ChatGPT» after «проверка не проходит».
+            actionable=bool(own and own[0].get('paid') and own[0].get('state_code') in ('not_checked','fulfilled_recorded','pending_window')
+                            and _ORDER_TOPIC.search(burst_now+' '+recent_client))
+            if seen and not actionable and not ((seen in re.sub(r'\D',' ',burst_now).split() or images) and _ORDER_TOPIC.search(burst_now+' '+str(images and 'заказ' or ''))):
                 seen=''
             if seen:
                 # Owner 21.11.2026: the number may come from a screenshot — the same order check applies.
