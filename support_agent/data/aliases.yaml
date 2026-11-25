@@ -85,7 +85,7 @@ services:
     aliases: [manus, манус]
   - id: openrouter
     name: OpenRouter
-    aliases: [openrouter, open router, опенроутер, опен роутер]
+    aliases: [openrouter, open router, опенроутер, опен роутер, опэн роутер, опэнроутер, оупен роутер, опен роутера, опэн роутера, роутер]
   - id: telegram
     name: Telegram
     aliases: [telegram, телеграм, телега]
