@@ -754,6 +754,8 @@ _STATE_TO_PRODUCT = {'grok': 'supergrok'}
 def foreign_language(text):
     """The client writes in a non-Cyrillic language (English, Turkish, ...)."""
     text = str(text or '')
+    # Owner 26.11.2026: a payment link, an e-mail, a key or a code is not a language («https://cursor.com/…» got English).
+    text = re.sub(r'https?://\S+|www\.\S+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+|\S*[A-Za-z]\S*\d\S*|\S*\d\S*[A-Za-z]\S*|\S{25,}', ' ', text)
     latin = len(re.findall(r'[A-Za-zÀ-ÿĞğŞşİıÇçÖöÜü]', text))
     cyrillic = len(re.findall(r'[А-Яа-яЁё]', text))
     words = re.findall(r'[A-Za-zÀ-ÿĞğŞşİıÇçÖöÜü]{2,}', text)
@@ -762,7 +764,7 @@ def foreign_language(text):
     plain = [w for w in words if w.casefold() not in brands]
     if len(re.findall(r'[ӘәҒғҚқҢңӨөҰұҮүҺһІіЎўЇїЄєҐґ]', text)) >= 2:
         return True  # Kazakh, Uzbek Cyrillic, Ukrainian: Cyrillic, but not Russian
-    return cyrillic == 0 and latin >= 6 and len(plain) >= 2
+    return cyrillic == 0 and latin >= 10 and len(plain) >= 3
 
 
 def research_request(context):
@@ -2610,15 +2612,30 @@ def _canon(name):
 
 
 def drop_foreign_service_sentences(text, about):
-    """Sentences naming a service the client did not mention are dropped (the rest stays)."""
-    mentioned = {_canon(m.group(1)) for m in _SERVICE_NAMES.finditer(str(about or ''))}
+    """Sentences naming a service the client did not mention are dropped (the rest stays, line breaks kept).
+    Owner 26.11.2026: an iPhone block is dropped when the client asks only about Android, and the reverse."""
+    text = str(text or '')
+    about = str(about or '')
+    mentioned = {_canon(m.group(1)) for m in _SERVICE_NAMES.finditer(about)}
+    android = bool(re.search(r'(?i)андроид|android|самсунг|samsung|xiaomi|сяоми', about))
+    iphone = bool(re.search(r'(?i)айфон|iphone|ios|apple|эпл|app\s*store|эп\s*стор', about))
+    if android != iphone:
+        drop = 'iPhone:' if android else 'Android:'
+        keep = 'Android:' if android else 'iPhone:'
+        if drop in text and keep in text:
+            a, b = text.index(drop), text.index(keep)
+            text = (text[:a] + text[b:]) if a < b else text[:b] + text[b:a]
+            text = text.strip()
     if not mentioned:
         return text
-    parts = re.split(r'(?<=[.!?])\s+', str(text or ''))
-    # Owner 25.11.2026: only a sentence ABOUT another service goes (it starts with its name);
-    # a list of services («ChatGPT, Claude, Telegram и другие») stays.
-    kept = [p for p in parts if not (_SERVICE_NAMES.match(p.strip()) and _canon(_SERVICE_NAMES.match(p.strip()).group(1)) not in mentioned)]
-    return ' '.join(kept) if kept else text
+    out_lines = []
+    for line in text.split('\n'):
+        parts = re.split(r'(?<=[.!?])\s+', line)
+        kept = [p for p in parts if not (_SERVICE_NAMES.match(p.strip()) and _canon(_SERVICE_NAMES.match(p.strip()).group(1)) not in mentioned)]
+        if kept or not line.strip():
+            out_lines.append(' '.join(kept))
+    result = '\n'.join(out_lines).strip()
+    return result or text
 
 
 _WORD = re.compile(r'[а-яёa-z]{6,}', re.I)

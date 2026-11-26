@@ -375,7 +375,7 @@ def owner_gate(answer, evidence=None, current_text=''):
     if sensitive(_without_owner_templates(reply)):
         return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
     from .completion_claims import has_completion_claim
-    if has_completion_claim(reply):
+    if has_completion_claim(_without_owner_templates(reply)):
         return _reason('ответ утверждает, что оплата, активация или возврат уже выполнены; это проверяет Александр.')
     from .dialog_state import grants_unverified_benefit
     if grants_unverified_benefit(reply):
@@ -388,7 +388,8 @@ def _without_owner_templates(reply):
     """Owner 25.11.2026: the owner's own step-by-step texts (how to get a token, send it as a file, the course
     bonus choice) name the token page — they are instructions, not access data. Only they are removed before the
     access-data check; anything else in the reply is still checked."""
-    text = str(reply or '')
+    # An order reference («Заказ #11900:», «FreeKassa 350…») is ours, not the client's access data.
+    text = re.sub(r'(?i)(?:заказ\w*|order)\s*(?:№|#)?\s*\d{3,12}|#\s?\d{3,12}|free\s*kassa\s*:?\s*\d{5,20}', ' ', str(reply or ''))
     try:
         from .paid_notice import TOKEN_STEPS_MANUAL, TOKEN_STEPS_AUTO
         from .media_batch import TOKEN_AS_FILE
@@ -449,6 +450,21 @@ def _owner_texts():
                     for value in node:
                         walk(value)
             walk(guide)
+        except Exception:
+            pass
+        # Fixed reply texts written into the code (owner-approved wording): NAME = '…' constants.
+        try:
+            import importlib
+            for name in ('new_account_guide', 'hard_routes', 'order_action', 'repeat_guard', 'media_batch',
+                         'course_sheets', 'paid_notice', 'handoff', 'turn_understanding', 'owner_scenarios'):
+                try:
+                    mod = importlib.import_module('.' + name, __package__)
+                except Exception:
+                    continue
+                for key, value in vars(mod).items():
+                    if (key.isupper() and isinstance(value, str) and 30 < len(value) < 3000
+                            and re.search('[а-яё]', value) and not re.search('INSTRUCTION|RULES|PATH', key)):
+                        texts.append(re.sub(r'\{[a-z_]*\}', '', value))
         except Exception:
             pass
         _OWNER_TEXTS = texts

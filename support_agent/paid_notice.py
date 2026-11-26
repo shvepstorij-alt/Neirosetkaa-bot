@@ -73,6 +73,11 @@ def next_step(found, tariffs):
     if re.search(r'(?i)chat\s*gpt|чат\s*гпт', str(found.get('service') or '')) and re.search(
             r'(?i)нов\w*\s+аккаунт', str(found.get('service') or '') + ' ' + str(found.get('plan') or '')):
         kind = 'chatgpt_new_account'
+    if re.search(r'(?i)друг\w*\s+сервис', str(found.get('service') or '')):
+        # Owner 26.11.2026: «Другой сервис» is paid by the client's payment link (the formula price was agreed here).
+        return 'other_service', ('Теперь пришлите, пожалуйста, ссылку на оплату тарифа, о котором договорились.\n'
+                                 + LINK_STEPS.format(site='сервиса', plan='').split('\n', 1)[1].replace(' Почта и пароль не нужны.', '')
+                                 + '\nЕсли этот сервис оформляется по почте и паролю, а не по ссылке, напишите — Александр подскажет.')
     detailed = steps_for(kind, service_name, str(found.get('plan') or ''))
     if detailed:
         return kind, detailed
@@ -187,8 +192,10 @@ def owner_note(found, kind, status, diagnostic=''):
             else 'ждём токен файлом — потом активируйте вручную' if kind == 'chatgpt_manual'
             else 'нужны ваши действия после ответа клиента')
     emoji = found.get('emoji') or '🛍'
+    if str(found.get('service') or '').strip().startswith(emoji.strip()):
+        emoji = ''  # the shop's own «✨ ChatGPT» already carries it
     esc = lambda v: html.escape(str(v or ''), quote=False)
-    lines = ['🧾 <b>ОПЛАТА · ' + esc(emoji) + ' ' + esc(found['service']) + (' · ' + esc(found['plan']) if found.get('plan') else '') + '</b>',
+    lines = ['🧾 <b>ОПЛАТА · ' + (esc(emoji) + ' ' if emoji else '') + esc(found['service']) + (' · ' + esc(found['plan']) if found.get('plan') else '') + '</b>',
              '━━━━━━━━━━━━',
              '📦 Заказ: <b>' + ('#' + found['order'] if found.get('order') else 'номер не указан') + '</b>']
     if found.get('fk'):

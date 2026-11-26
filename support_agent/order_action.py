@@ -111,7 +111,7 @@ async def decide(service, job, number, context=None, source='text'):
                            number, row, 'paid_other', owner_alert=True)
         if isinstance(result, dict) and result.get('error') == 'already_sent':
             return _answer(WINDOW_OPEN.format(n=shown), False,
-                           note + '. Повторная активация уже выдавалась за последние сутки.', number, row, 'already_sent')
+                           note + '. Повторная активация уже выдавалась менее 2 часов назад — кнопка ещё действует.', number, row, 'already_sent')
         reason = str((result or {}).get('msg') or (result or {}).get('error') or 'магазин не выполнил выдачу')
         return _answer(REACTIVATION_BY_OWNER.format(n=shown), False,
                        note + '. Нужна повторная активация — выдать не удалось: ' + reason[:200], number, row,

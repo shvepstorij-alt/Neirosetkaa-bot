@@ -1760,6 +1760,13 @@ class Service:
             answer=finalize(answer, __import__('support_agent.turn_understanding',fromlist=['validate']).validate(understanding, context), context)
         else:
             answer=issue_first(answer, context)
+            try:
+                # Owner 26.11.2026: a link to a service outside the catalogue gets the «Другой сервис» steps on this path too.
+                from . import hard_routes
+                if hard_routes._offcat_link_detect(str(context.get('burst') or ''), context, answer):
+                    answer=hard_routes._offcat_link_act(answer, str(context.get('burst') or ''), context)
+            except Exception:
+                logging.warning('Hard routes skipped')
         answer=tidy(answer, context)
         from .turn_understanding import continue_step
         if continue_step(context) and isinstance(answer,dict) and isinstance(answer.get('evidence'),dict):
@@ -2836,6 +2843,9 @@ class Service:
                         earlier=[row['text'] for row in self.store.db.execute(
                             "SELECT text FROM messages WHERE chat=? AND role='assistant' ORDER BY at DESC, mid DESC LIMIT 4",
                             (job['chat'],)).fetchall()]
+                        ev=answer.get('evidence') or {}
+                        if ev.get('course_sheet') or ev.get('owner_approved_wording') or ev.get('hard_route_auto'):
+                            earlier=[]  # owner 26.11.2026: an owner text is sent whole, even if said to this client before
                         answer['reply']=dedupe(answer['reply'],earlier)
                         from .repeat_guard import resent_after_data
                         recent=[]

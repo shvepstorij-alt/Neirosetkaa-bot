@@ -247,10 +247,21 @@ def _paidissue_detect(burst, context, answer):
 
 
 def _paidissue_act(answer, burst, context):
+    # Owner 26.11.2026: no silent stop — the client gets the owner's own «номер заказа + скриншот» answer,
+    # the owner gets an alert. (When the order was found, order_action already answered and this rule is skipped.)
     evidence = dict(answer.get('evidence') or {})
-    evidence['situation_hold'] = True
-    evidence.setdefault('diagnostic', 'Оплатил, не работает: свой текст модели уходит только черновиком.')
-    return dict(answer, evidence=evidence)
+    text = _faq('activation_failed')
+    history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
+    has_number = bool(re.search(r'#\s?\d{3,}|заказ\w*\s*(?:№|номер)?\s*\d{3,}|\b\d{9}\b', burst + ' ' + history))
+    asks_already = bool(re.search(r'(?i)номер\w*\s+заказ|скрин', str(answer.get('reply') or '')))
+    if has_number or asks_already:
+        text = ''  # the number is known (another rule answers) or the draft already asks for it
+    if not text:
+        evidence['situation_hold'] = True
+        evidence.setdefault('diagnostic', 'Оплатил, не работает: свой текст модели уходит только черновиком.')
+        return dict(answer, evidence=evidence)
+    evidence.update(owner_text_used=True, owner_alert=True, hard_route_auto=True)
+    return dict(answer, reply=text, handoff=False, evidence=evidence)
 
 
 # --- 9. angry / complaint / threat → calm short reply + urgent alert (owner 21.11.2026) ----------------
@@ -805,7 +816,43 @@ def _offcat_act(answer, burst, context):
     return dict(answer, reply=_faq('off_catalog') or answer.get('reply'), handoff=False, evidence=evidence)
 
 
+# --- 0. a link to a service that is not in the catalogue → steps to «Другой сервис» (owner 26.11.2026) ----------
+_URL = re.compile(r'https?://(?:www\.)?([a-z0-9-]+)\.[a-z.]{2,}', re.I)
+_PAY_ASK = re.compile(r'(?i)оплат|купит|подписк|тариф|через\s+(?:вас|бот)|можно\s+ли')
+OFFCAT_LINK = (
+    'Да, оплатить через нас можно 🙂 Вот как:\n\n'
+    '1. Откройте сайт сервиса и раздел с тарифами (Pricing, Upgrade или Subscription). Напишите сюда, какой тариф нужен '
+    'и сколько он стоит в $ — я посчитаю цену в рублях (цена в $ × 100 − 10 ₽).\n'
+    '2. Оплатите в боте @neirosetkaa_bot: «Каталог» → «Другой сервис» → тариф на нужную сумму в $, по СБП или картой «Мир».\n'
+    '3. После оплаты пришлите сюда ссылку на оплату тарифа:\n'
+    '• включите VPN, войдите в свой аккаунт на сайте;\n'
+    '• выберите тариф и нажмите кнопку оплаты;\n'
+    '• на странице оплаты ничего не вводите — скопируйте ссылку из адресной строки и пришлите сюда.\n'
+    'Цена на странице оплаты должна быть в долларах; если другая валюта — смените страну в VPN.\n\n'
+    'Александр оплатит тариф и напишет здесь.')
+
+
+def _offcat_link_detect(burst, context, answer):
+    found = _URL.search(burst)
+    if not found or not _PAY_ASK.search(burst):
+        return False
+    domain = found.group(1).casefold().replace('-', '')
+    names = ' '.join((str(r.get('service') or '') + ' ' + str(r.get('service_id') or '')).casefold().replace(' ', '')
+                     for r in (context or {}).get('tariffs') or [])
+    common = ('chatgpt', 'openai', 'claude', 'anthropic', 'google', 'youtube', 'apple', 't', 'telegram', 'freekassa')
+    return domain not in common and domain not in names
+
+
+def _offcat_link_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    for key in ('situation_hold', 'owner_fact_hold'):
+        evidence.pop(key, None)
+    evidence.update(owner_text_used=True, owner_alert=True, hard_route_auto=True)
+    return dict(answer, reply=OFFCAT_LINK, handoff=False, evidence=evidence)
+
+
 RULES = (
+    ('offcat_link', _offcat_link_detect, _offcat_link_act),
     ('superseded_owner_line', _superseded_detect, _superseded_act),
     ('claude_blocked_money', _claude_block_detect, _claude_block_act),
     ('fkwallet_qr', _fkwallet_detect, _fkwallet_act),
@@ -833,7 +880,7 @@ RULES = (
     ('off_catalog_generic_guide', _offcat_detect, _offcat_act),
     ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
-STOP_AFTER = {'claude_blocked_money', 'fkwallet_qr', 'chatgpt_team', 'where_is_my_order', 'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'receipt_no_order', 'linkpay_no_link', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
+STOP_AFTER = {'offcat_link', 'claude_blocked_money', 'fkwallet_qr', 'chatgpt_team', 'where_is_my_order', 'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'receipt_no_order', 'linkpay_no_link', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
 
 
 def apply(answer, context):
