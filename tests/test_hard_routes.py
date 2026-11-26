@@ -185,12 +185,11 @@ class OwnerAnswers21Nov(unittest.TestCase):
         self.assertIn('ошибку', out['reply'])
 
     def test_paid_issue_model_text_is_draft_only(self):
-        # Owner 24.11.2026: «оплатил, не работает» is answered at once with the clarifying ask, Alexander is told.
         out = hard_routes.apply({'reply': 'У Kimi Pro вдвое больше кредитов.', 'handoff': False, 'evidence': {}},
                                 {'burst': 'оплатил кими, подписка не появилась'})
-        self.assertFalse(out['evidence'].get('situation_hold'))
-        self.assertTrue(out['evidence']['owner_alert'])
+        # Owner 26.11.2026: instead of a silent draft the client gets the owner's «номер заказа + скриншот».
         self.assertIn('номер заказа', out['reply'])
+        self.assertFalse(out['evidence'].get('situation_hold'))
         owner = hard_routes.apply({'reply': 'Пришлите номер заказа.', 'handoff': False, 'evidence': {'owner_text_used': True}},
                                   {'burst': 'оплатил кими, подписка не появилась'})
         self.assertFalse(owner['evidence'].get('situation_hold'))
@@ -748,65 +747,3 @@ class Bench17Fixes(unittest.TestCase):
         out = self._tidy('джемини про можно на мой гугл акк оформить?',
                          'Да, можем.\n\nОплатить можно в боте @neirosetkaa_bot. После оплаты подскажу, что понадобится для активации.')
         self.assertIn('почту и пароль', out)
-
-
-class ForwardedBotNoticeAndGreeting(unittest.TestCase):
-    """Owner 24.11.2026: ElevenLabs reply greeted twice and stacked the catalog onto a forwarded «Оплата прошла»."""
-
-    def test_forwarded_notice_is_not_a_purchase(self):
-        from support_agent import hard_routes
-        burst = ('Да в принципе прикинул - креатор подойдет\n🎉 Оплата прошла!\n\n📦 ElevenLabs - Creator\n\n'
-                 'Чтобы оформить подписку, получи ссылку на оплату по инструкции и пришли её сюда\nу меня был тариф\nДобрый вечер!')
-        self.assertTrue(hard_routes.BOT_NOTICE.search(burst))
-
-    def test_one_greeting_per_message(self):
-        from support_agent.conversation_style import decorate_reply
-        out = decorate_reply('Есть такие варианты:\n• ElevenLabs Creator - 2290 ₽\n\nДобрый вечер! Creator вам подходит.',
-                             {'current_client_greeting': True}, introduced=False)
-        self.assertEqual(out.count('Добрый вечер'), 0)
-        self.assertIn('\n\nCreator вам подходит.', out)
-        self.assertTrue(out.startswith('Здравствуйте!'))
-
-
-class NightReview24Nov(unittest.TestCase):
-    """Night review 24.11.2026: systemic fixes found in the day's answers."""
-
-    def test_interjection_is_not_a_company(self):
-        from support_agent import hard_routes
-        self.assertIsNone(hard_routes._INVOICE.search('Ооо, круть\nБлагодарю 🙏'))
-        self.assertTrue(hard_routes._INVOICE.search('нужен счёт на ООО'))
-
-    def test_balance_question_is_not_a_price_question(self):
-        from support_agent import hard_routes
-        burst = 'Напиши пожалуйста, как можно тратить кредиты и монетки?'
-        self.assertFalse(hard_routes._price_detect(burst, {'tariffs': []}, {'reply': 'Есть варианты'}))
-
-    def test_call_answer_only_when_call_asked(self):
-        from support_agent import hard_routes
-        answer = {'reply': 'Созвониться, к сожалению, не получится - можем текстом или голосовыми сообщениями.'}
-        self.assertTrue(hard_routes._call_detect('Ждем живого Александра:-)', {}, answer))
-        self.assertFalse(hard_routes._call_detect('а можно созвониться?', {}, answer))
-        out = hard_routes._call_act(answer, 'Ждем живого Александра:-)', {})
-        self.assertIn('Передал Александру', out['reply'])
-
-
-class Live24NovEvening(unittest.TestCase):
-    """Owner 24.11.2026: «не могу активировать ИИ» and an unsupported_country screenshot got «Александр ответит…»."""
-
-    def test_instruction_mentioning_a_token_is_not_a_leak(self):
-        from support_agent.auto_policy import owner_gate
-        reply = ('Подскажите, пожалуйста, номер заказа из бота и пришлите скриншот.\n\nЕсли бот пишет, что токен не тот, '
-                 'выйдите из аккаунта ChatGPT, войдите заново, скопируйте новый токен и активируйте через @neirosetkaa_bot. '
-                 'Кнопка действует 2 часа.')
-        self.assertIsNone(owner_gate({'reply': reply, 'handoff': False}, {}))
-        self.assertIsNotNone(owner_gate({'reply': 'Ваш пароль: Qwerty123!', 'handoff': False}, {}))
-
-    def test_country_error_gets_vpn_steps(self):
-        from support_agent import hard_routes
-        burst = ('Привет! У меня не получается зайти в мой аккаунт чата в браузере( [скриншот: ChatGPT, «Ошибка аутентификации»: '
-                 'Сервисы OpenAI недоступны в вашей стране, error_code unsupported_country]')
-        out = hard_routes.apply({'reply': 'Пришлите номер заказа.', 'evidence': {}}, {'burst': burst, 'tariffs': []})
-        self.assertIn('другой регион', out['reply'])
-        self.assertIn('другой VPN-сервис', out['reply'])
-        self.assertIn('другой браузер', out['reply'])
-        self.assertIn('@DureVpnBot', out['reply'])

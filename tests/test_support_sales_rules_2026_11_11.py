@@ -111,8 +111,7 @@ class ServiceGuideTests(unittest.TestCase):
         self.assertIn('Max 20×', data['services']['claude']['plans']['Ultra'])
         self.assertIn('Codex', data['choose']['chatgpt_vs_claude'])
         text = str(data)
-        # our ₽ prices come only from the catalog; the owner's «$N × 100 − 10 ₽» formula and its example are allowed
-        self.assertIsNone(re.search(r'\d+\s*(?:₽|руб)', re.sub(r'−\s*10\s*₽(?:\s*\([^)]*\))?', '', text)))
+        self.assertIsNone(re.search(r'\d+\s*(?:₽|руб)', text))  # our ₽ prices come only from the catalog
         self.assertIn('3 000', data['services']['higgsfield']['plans']['Ultra'])  # catalog prices only
         self.assertEqual(set(data['services']['kimi']['plans']), {'Plus', 'Pro', 'Max', 'Ultra'})
         self.assertIn('official_prices', tu_text())
@@ -194,9 +193,9 @@ class VerbatimTests(unittest.TestCase):
     def test_early_drop_answer_keeps_the_promo_codes(self):
         answer = _turn('У меня слетела подписка', {'owner_topic': 'subscription_ended_early', 'reply': 'Пришлите скрин.'})
         self.assertFalse(answer['handoff'])
-        # Owner 21.11.2026: under the guarantee Alexander checks and restores; no promo code is offered.
+        # Owner 26.11.2026: Alexander restores it, we admit our fault and offer the NAVSEX discount.
         self.assertIn('восстановит', answer['reply'])
-        self.assertNotIn('NAVSEX', answer['reply'])
+        self.assertIn('NAVSEX', answer['reply'])
 
 
 class OwnerAnswers12_11Tests(unittest.TestCase):
@@ -1579,6 +1578,4 @@ class Live3Fixes20NovTests(unittest.TestCase):
         from support_agent.faq import usable_answer
         for topic in ('activation_failed', 'activate_for_me'):
             self.assertNotIn('пароль', usable_answer(topic))
-            # Owner 24.11.2026: the token steps are allowed only as the separate Pro 5×/20×/Pro50 note, never first.
-            first = usable_answer(topic).split('\n\n')[0]
-            self.assertNotIn('api/auth/session', first)
+            self.assertNotIn('api/auth/session', usable_answer(topic))

@@ -31,6 +31,23 @@ class OwnerTextsPassGate(unittest.TestCase):
     def test_real_secret_still_stops(self):
         self.assertIsNotNone(owner_gate({'reply': 'Логин: user@mail.ru пароль: Qwerty12345!', 'handoff': False}, {}))
 
+    def test_every_paid_notice_passes(self):
+        """Owner 26.11.2026: the after-payment step of every service goes out by itself."""
+        services = [('ChatGPT', 'Plus'), ('ChatGPT', 'Pro 5×'), ('ChatGPT', 'Новый аккаунт с подпиской Plus'),
+                    ('Пополнение кредитов ChatGPT', '500'), ('Claude', 'Pro'), ('Claude', 'Ultra'), ('Perplexity Pro', 'Pro'),
+                    ('Gemini', 'Pro'), ('SuperGrok', 'Lite'), ('Midjourney', 'Basic'), ('Suno', 'Pro'), ('Gamma', 'Pro'),
+                    ('Zoom', 'Pro'), ('Spotify', 'Premium'), ('YouTube', 'Premium'), ('Notion', 'Plus'), ('Freepik', 'Premium'),
+                    ('Krea', 'Pro'), ('GitHub', 'Pro'), ('OpenRouter', '10'), ('Cursor', 'Plus'), ('Canva Pro', 'Pro'),
+                    ('Kimi', 'Plus'), ('Make', 'Core'), ('Kling AI', 'Pro'), ('Runway', 'Standard'), ('HeyGen', 'Creator'),
+                    ('ElevenLabs', 'Creator'), ('Lovable Pro', 'Pro'), ('Higgsfield AI', 'Plus'), ('Genspark', 'Plus'),
+                    ('Manus', 'Pro'), ('Z.ai', 'Lite'), ('Telegram Premium', '12'), ('CapCut', 'Pro'),
+                    ('App Store / iCloud', 'Россия 1000'), ('Другой сервис', '$20')]
+        for name, plan in services:
+            with self.subTest(service=name):
+                kind, text = paid_notice.compose({'order': '11900', 'service': name, 'plan': plan, 'fk': '350902411'},
+                                                 [{'service_id': name.split()[0].lower(), 'service': name, 'plan': plan, 'price': 1000}])
+                self.assertIsNone(owner_gate({'reply': pipe(text), 'handoff': False}, {}))
+
 
 if __name__ == '__main__':
     unittest.main()
