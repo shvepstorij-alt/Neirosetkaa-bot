@@ -17134,6 +17134,21 @@ async def setup_webhook_server():
         markup_for_category=_appstore_markup_web,usd_rate=_nsg_usd_rate,
         calc_price=_support_nsg.calc_price_rub,workflow_snapshot=_support_workflows,
         bot_identity=_support_bot_identity,generation=_support_generation))
+    # Помощник поддержки сам выдаёт повторную активацию (владелец 21.11 / 26.11.2026).
+    # Маршрут был описан в support_shop_actions.py, но не подключён — помощник получал 404 (JSONDecodeError).
+    try:
+        from support_shop_actions import make_support_resend_handler, fetch_facts as _sr_fetch
+        async def _sr_fetch_facts(uid, ref):
+            return await _sr_fetch(await get_pool(), uid, ref)
+        async def _sr_notify(text):
+            try:
+                await bot.send_message(ADMIN_ID, text)
+            except Exception as _e_sr:
+                logging.warning(f"support resend notify: {_e_sr}")
+        app.router.add_post('/api/support/resend_activation', make_support_resend_handler(
+            fetch=_sr_fetch_facts, claim=activation_cooldown, resend=gpt_resend_activation, notify=_sr_notify))
+    except Exception as _e_srr:
+        logging.error(f"маршрут повторной активации не подключён: {_e_srr}")
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)
