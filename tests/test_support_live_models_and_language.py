@@ -114,7 +114,7 @@ class ServiceRules12_11Tests(unittest.TestCase):
         nav = {'bot_navigation': {'status': 'available', 'username': 'neirosetkaa_bot', 'catalog_webapp': True}}
         self.assertIn('OpenRouter', usable_answer('deepseek_topup'))
         self.assertIn('в долларах', usable_answer('linkpay_currency'))
-        self.assertIn('другой VPN-сервис', usable_answer('linkpay_no_vpn'))  # owner 24.11.2026
+        self.assertIn('почту и пароль', usable_answer('linkpay_no_vpn'))  # owner 26.11.2026: другой VPN или почта и пароль
         self.assertIn('тот же аккаунт', usable_answer('renewal_same_account'))
         self.assertIn('российский аккаунт', usable_answer('gemini_google'))
         self.assertIn('chatgpt.com/download', usable_answer('chatgpt_desktop_app'))
