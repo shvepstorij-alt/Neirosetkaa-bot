@@ -48,6 +48,14 @@ class OwnerTextsPassGate(unittest.TestCase):
                                                  [{'service_id': name.split()[0].lower(), 'service': name, 'plan': plan, 'price': 1000}])
                 self.assertIsNone(owner_gate({'reply': pipe(text), 'handoff': False}, {}))
 
+    def test_receipts_after_full_pipeline(self):
+        """Owner 28.11.2026: «данные получил» replies pass after greeting and dash restyling."""
+        from support_agent.media_batch import SAFE_RECEIPTS
+        from support_agent.turn_understanding import ACCOUNT_SETUP_RECEIVED
+        for text in (ACCOUNT_SETUP_RECEIVED, DATA_RECEIVED) + tuple(SAFE_RECEIPTS):
+            with self.subTest(text=text[:30]):
+                self.assertIsNone(owner_gate({'reply': pipe(text), 'handoff': True}, {'manual_secret_intake': True}))
+
 
 if __name__ == '__main__':
     unittest.main()
