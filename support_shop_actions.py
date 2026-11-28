@@ -214,7 +214,10 @@ async def fetch_facts(pool, uid, ref, *, plan_info=None):
             if gift and gift['status'] in _NSG_STATES:
                 signals['nsgifts_status'] = str(gift['status'])
             pending, codes, started = _TABLES[service]
-            started_sql = '(activating_at IS NOT NULL)' if started else 'FALSE'
+            # 28.11.2026: an activation started more than 10 minutes ago and never finished (no code used)
+            # is a failed attempt, not one in progress — the repeat activation is allowed.
+            started_sql = ("(activating_at IS NOT NULL AND activating_at > NOW() - make_interval(mins => 10))"
+                           if started else 'FALSE')
             prow = await conn.fetchrow(
                 'SELECT (expires_at>NOW()) AS open, ' + started_sql + ' AS started FROM ' + pending +
                 ' WHERE order_id=$1 AND user_id=$2', oid, uid)
