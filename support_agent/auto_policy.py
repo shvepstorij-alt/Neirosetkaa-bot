@@ -420,7 +420,11 @@ def _safe_receipt(reply):
         from .repeat_guard import DATA_RECEIVED
     except Exception:
         return False
-    return str(reply or '').strip() in set(SAFE_RECEIPTS) | {DATA_RECEIVED}
+    from .turn_understanding import ACCOUNT_SETUP_RECEIVED
+    norm = lambda v: re.sub(r'[—–]', '-', str(v or '')).strip()
+    text = norm(reply)
+    # The greeting may stand before it; the receipt itself must end the reply (dashes are restyled before sending).
+    return any(text == norm(r) or text.endswith('\n\n' + norm(r)) for r in set(SAFE_RECEIPTS) | {DATA_RECEIVED, ACCOUNT_SETUP_RECEIVED})
 
 
 _OWNER_TEXTS = None

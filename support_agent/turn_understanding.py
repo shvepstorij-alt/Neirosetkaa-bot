@@ -896,6 +896,9 @@ def _context_prices(context):
     return tuple(prices)
 
 
+ACCOUNT_SETUP_RECEIVED = ('Спасибо, все данные получил 👍 Резервной может быть любая ваша почта, mail.ru тоже подойдёт. '
+                          'Если ещё не оплатили — оформите в боте @neirosetkaa_bot «Каталог» → ChatGPT → «Новый аккаунт с подпиской Plus». '
+                          'Александр создаст почту и аккаунт с подпиской и пришлёт данные для входа здесь.')
 COURSE_RECEIVED = 'Спасибо! Александр скоро проверит информацию и ответит по оформлению бонусной подписки.'
 
 
@@ -2546,8 +2549,8 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                         repeat_hold=_repeats_assistant(answer.get('reply'), context),
                         diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
         if account_ready:
-            from .handoff import handoff_text
-            answer = dict(answer, reply=handoff_text(), handoff=True, evidence=evidence)
+            # Owner 28.11.2026: a clear receipt, not «Александр ответит»; the owner gets the card with the data.
+            answer = dict(answer, reply=ACCOUNT_SETUP_RECEIVED, handoff=True, evidence=evidence)
         else:
             answer = dict(answer, handoff=True, evidence=evidence)
         return answer
