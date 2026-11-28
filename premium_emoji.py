@@ -123,16 +123,41 @@ def _premiumize_buttons(markup) -> None:
 
 class PremiumEmojiMiddleware(BaseRequestMiddleware):
     async def __call__(self, make_request, bot, method):
+        orig_text = getattr(method, "text", None)
+        orig_caption = getattr(method, "caption", None)
+        buttons = []
         try:
             pm = getattr(method, "parse_mode", None)
             if isinstance(pm, str) and pm.lower() == "html":
-                if getattr(method, "text", None):
-                    method.text = premiumize_text(method.text)
-                if getattr(method, "caption", None):
-                    method.caption = premiumize_text(method.caption)
+                if orig_text:
+                    method.text = premiumize_text(orig_text)
+                if orig_caption:
+                    method.caption = premiumize_text(orig_caption)
             markup = getattr(method, "reply_markup", None)
             if markup is not None:
+                for row in getattr(markup, "inline_keyboard", None) or []:
+                    for btn in row:
+                        buttons.append((btn, getattr(btn, "text", ""), getattr(btn, "icon_custom_emoji_id", None)))
                 _premiumize_buttons(markup)
         except Exception as e:
             logging.warning(f"premium emoji middleware: {e}")
-        return await make_request(bot, method)
+        try:
+            return await make_request(bot, method)
+        except Exception as e:
+            # 28.11.2026: Telegram отклонил премиум-эмодзи (DOCUMENT_INVALID и т.п.) — клиент не получил
+            # код App Store. Повторяем то же сообщение с обычными эмодзи.
+            msg = str(e)
+            if not any(k in msg for k in ("DOCUMENT_INVALID", "EMOJI", "emoji", "ENTITY", "STICKER")):
+                raise
+            logging.warning(f"premium emoji rejected, resending plain: {msg[:120]}")
+            if orig_text is not None:
+                method.text = orig_text
+            if orig_caption is not None:
+                method.caption = orig_caption
+            for btn, text, icon in buttons:
+                try:
+                    btn.text = text
+                    object.__setattr__(btn, "icon_custom_emoji_id", icon)
+                except Exception:
+                    pass
+            return await make_request(bot, method)
