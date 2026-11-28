@@ -33,6 +33,8 @@ WINDOW_OPEN = ('Заказ #{n} вижу, он оплачен. В боте @neir
 ALREADY_ACTIVATED = ('Заказ #{n} вижу: активация по нему уже проходила. Если подписки не видно, выйдите из аккаунта и войдите снова '
                      'через 10–15 минут, с VPN одной и той же страны. Если не появится — пришлите скриншот.')
 MANUAL = 'Заказ #{n} вижу, он в ручном оформлении — Александр продолжит здесь.'
+IN_PROGRESS = ('Заказ #{n} вижу: активация по нему началась несколько минут назад. Подождите, пожалуйста, 10 минут и проверьте '
+               'тариф в настройках аккаунта. Если подписка не появится — напишите сюда, выдам повторную активацию.')
 PAID_OTHER = 'Заказ #{n} вижу, он оплачен. Александр проверит активацию и ответит здесь.'
 
 
@@ -80,6 +82,17 @@ async def decide(service, job, number, context=None, source='text'):
         return _answer('Заказ #' + shown + ' вижу, он оплачен. ' + TOKEN_STEPS_MANUAL.format(), False,
                        note + '. Pro: запрошен токен файлом.', number, row, 'manual', owner_alert=True)
     if activation == 'pending_window':
+        burst = str((context or {}).get('burst') or '')
+        if re.search(r'(?i)не\s+(?:открыва|работа|получа|актив|загружа|грузит)|ошибк|завис|бел\w+\s+экран', burst):
+            # Owner 28.11.2026: the button is still valid but does not work for the client → the owner's fix, not «press it».
+            try:
+                from .turn_understanding import _faq_answer
+                text = _faq_answer('activation_button_fails')
+            except Exception:
+                text = ''
+            if text:
+                return _answer('Заказ #' + shown + ' вижу, он оплачен. ' + text, False, note + '. Кнопка не срабатывает.',
+                               number, row, 'window_open')
         return _answer(WINDOW_OPEN.format(n=shown), False, note, number, row, 'window_open')
     if activation == 'code_consumed':
         return _answer(ALREADY_ACTIVATED.format(n=shown), False, note, number, row, 'already_activated')
@@ -103,7 +116,10 @@ async def decide(service, job, number, context=None, source='text'):
                            note + '. 🤖 Помощник выдал повторную активацию.', number, row, 'reactivated')
         if isinstance(result, dict) and result.get('error') == 'window_open':
             return _answer(WINDOW_OPEN.format(n=shown), False, note, number, row, 'window_open')
-        if isinstance(result, dict) and result.get('error') in ('already_activated', 'in_progress'):
+        if isinstance(result, dict) and result.get('error') == 'in_progress':
+            # 28.11.2026: the client is activating right now (started < 10 min ago) — wait, then it can be re-issued.
+            return _answer(IN_PROGRESS.format(n=shown), False, note + '. Активация идёт прямо сейчас.', number, row, 'in_progress')
+        if isinstance(result, dict) and result.get('error') == 'already_activated':
             return _answer(ALREADY_ACTIVATED.format(n=shown), False, note, number, row, 'already_activated')
         if isinstance(result, dict) and result.get('error') in ('manual_order', 'manual_plan', 'not_supported', 'too_old'):
             return _answer(PAID_OTHER.format(n=shown), False,
