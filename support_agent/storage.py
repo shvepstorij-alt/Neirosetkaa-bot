@@ -290,6 +290,8 @@ class Store:
         now = time.time() if now is None else float(now)
         msk = datetime.timezone(datetime.timedelta(hours=3))
         day = datetime.datetime.fromtimestamp(now, msk).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        # Owner 24.11.2026: a conversation that runs past midnight is not a new day — no intro in the middle of it.
+        day = min(day, now - 7 * 86400)  # owner 28.11.2026: a client we talked to this week is not greeted as new
         c=self.chat(cid)
         if c and float(c['introduced'] or 0) >= day:
             return True
@@ -592,10 +594,6 @@ class Store:
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
             if not d or d['state']!='ready' or not self.still_current(d):return None
             if self.effective_mode(d['chat'])!='auto':return None
-            # Owner 24.11.2026: «Александр ответит здесь…» is never sent twice in a row; Alexander has the draft card.
-            last=self.db.execute("SELECT text,at FROM messages WHERE chat=? AND role IN ('assistant','owner') ORDER BY mid DESC LIMIT 1",
-                                 (d['chat'],)).fetchone()
-            if last and str(last['text'] or '').startswith(text[:40]) and time.time()-float(last['at'] or 0)<12*3600:return None
             cur=self.db.execute('''INSERT INTO drafts(chat,mid,revision,global_revision,text,summary,handoff,created)
                 VALUES (?,?,?,?,?,?,0,?)''',(d['chat'],d['mid'],d['revision'],d['global_revision'],text,
                 'Служебный ответ клиенту; исходный черновик и причина сохранены владельцу.',time.time()))

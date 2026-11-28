@@ -126,6 +126,19 @@ def remote_detail(exc):
         hint='нет связи с Telegram со стороны сервера — обычно проходит само'
     return text+(' — '+hint if hint else '')
 
+def _short_reaction(job, store):
+    """Owner 28.11.2026: «👍», «спасибо», «получилось», «понял» never get the introduction."""
+    try:
+        row=store.db.execute("SELECT text FROM messages WHERE chat=? AND mid=?",(job['chat'],job['mid'])).fetchone()
+        text=str((row or {})['text'] if row else '').strip()
+    except Exception:
+        return False
+    words=re.findall(r'[A-Za-zА-Яа-яЁё]+',text)
+    if re.search(r'(?i)здравств|привет|добр\w+\s+(?:день|утро|вечер)|hello|\bhi\b',text):
+        return False  # a greeting from a new client still gets the introduction
+    return len(words)<=3 or bool(re.search(r'(?i)^(?:спасибо|благодар|получил|понял|ок|хорошо|отлично|супер|ясно)',text))
+
+
 def present_outgoing(answer, info=None, introduced=False, facts=None):
     """The exact text and seal the send path stores. Tests must use this, not a hand-built string."""
     from .conversation_style import decorate_reply
@@ -462,8 +475,8 @@ class Service:
             # Owner 25.11.2026: an e-mail on its own (course e-mail, account e-mail) is not a secret —
             # the text keeps «[email скрыт]», the answer goes on. A password or code next to it still is.
             from .course_sheets import EMAIL
-            rest=EMAIL.sub('',raw)
-            if EMAIL.search(raw) and len(rest.strip())<120 and not sensitive(rest):
+            rest=re.sub(r'\+?\d[\d\s()\-]{8,}\d','',EMAIL.sub('',raw))  # owner 28.11.2026: a phone next to it is not a secret either
+            if EMAIL.search(raw) and len(rest.strip())<300 and not sensitive(rest):
                 secret=False
         media={'kind':'none'}
         if m.get('photo'):
@@ -1724,7 +1737,9 @@ class Service:
                     except Exception:return False
                 fresh=[o for o in ((context.get('client_orders') or {}).get('orders') or [])
                        if o.get('paid') and _recent(o) and o.get('state_code') in ('not_checked','fulfilled_recorded','pending_window')]
-                if len(fresh)==1:
+                problem=re.search(r'(?i)не\s+(?:актив|работа|пришл|появ|получа|открыва|прош)|кнопк|ошибк|проверк\w*\s+(?:заказ|подтвержд|оплат)|активир',
+                                  str(context.get('burst') or ''))
+                if len(fresh)==1 and problem:
                     seen=str(fresh[0].get('order') or '').lstrip('#')
             # Owner 25.11.2026: an old order from the history is not today's question («Как обстановка с Клодом?»).
             # Only a number in this message (or its screenshot) about payment/activation is checked.
@@ -2819,7 +2834,7 @@ class Service:
                     from .dialog_state import record_outgoing
                     first=self.store.chat(job['chat'])['batch_first']
                     answer,replaced=present_outgoing(answer,session_info(self.store.db,job['chat'],first,job['mid']),
-                                                     introduced=self.store.introduced(job['chat']),
+                                                     introduced=self.store.introduced(job['chat']) or _short_reaction(job, self.store),
                                                      facts=getattr(self,'_last_dialog_facts',{}) or {})
                     if replaced:
                         answer['handoff']=True

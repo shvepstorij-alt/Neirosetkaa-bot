@@ -611,7 +611,7 @@ def build_cases(catalog):
         {'role': 'client', 'text': 'как оплатить z.ai',
          'payment_asked': True,
          'expect': {'hold': False, 'service': 'zai',
-                    'need': ['почт', 'ссылк', 'не нужны'],
+                    'need': ['почт', 'пароль'],  # owner 26.11.2026: Z.ai — e-mail and password by default
                     'forbid': ['СБП', 'Я оплатил']}},
         {'role': 'client', 'text': 'давайте по ссылке', 'use_state': True,
          'payment_asked': True, 'fulfillment_choice': 'link',
